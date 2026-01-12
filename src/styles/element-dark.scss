@@ -3,42 +3,43 @@
 // 配合项目紫色渐变主题
 // ============================================
 
+@use 'sass:color';
 @use './variables' as *;
 
 // 暗色模式 CSS 变量覆盖
 html.dark {
   // 主色 - 紫色
   --el-color-primary: #{$primary-start};
-  --el-color-primary-light-3: #{lighten($primary-start, 10%)};
-  --el-color-primary-light-5: #{lighten($primary-start, 20%)};
-  --el-color-primary-light-7: #{lighten($primary-start, 30%)};
-  --el-color-primary-light-8: #{lighten($primary-start, 35%)};
-  --el-color-primary-light-9: #{lighten($primary-start, 40%)};
-  --el-color-primary-dark-2: #{darken($primary-start, 10%)};
+  --el-color-primary-light-3: #{color.adjust($primary-start, $lightness: 10%)};
+  --el-color-primary-light-5: #{color.adjust($primary-start, $lightness: 20%)};
+  --el-color-primary-light-7: #{color.adjust($primary-start, $lightness: 30%)};
+  --el-color-primary-light-8: #{color.adjust($primary-start, $lightness: 35%)};
+  --el-color-primary-light-9: #{color.adjust($primary-start, $lightness: 40%)};
+  --el-color-primary-dark-2: #{color.adjust($primary-start, $lightness: -10%)};
 
   // 成功色
   --el-color-success: #{$success};
-  --el-color-success-light-3: #{lighten($success, 15%)};
-  --el-color-success-light-5: #{lighten($success, 25%)};
-  --el-color-success-light-7: #{lighten($success, 35%)};
-  --el-color-success-light-8: #{lighten($success, 40%)};
-  --el-color-success-light-9: #{lighten($success, 45%)};
+  --el-color-success-light-3: #{color.adjust($success, $lightness: 15%)};
+  --el-color-success-light-5: #{color.adjust($success, $lightness: 25%)};
+  --el-color-success-light-7: #{color.adjust($success, $lightness: 35%)};
+  --el-color-success-light-8: #{color.adjust($success, $lightness: 40%)};
+  --el-color-success-light-9: #{color.adjust($success, $lightness: 45%)};
 
   // 警告色
   --el-color-warning: #{$warning};
-  --el-color-warning-light-3: #{lighten($warning, 15%)};
-  --el-color-warning-light-5: #{lighten($warning, 25%)};
-  --el-color-warning-light-7: #{lighten($warning, 35%)};
-  --el-color-warning-light-8: #{lighten($warning, 40%)};
-  --el-color-warning-light-9: #{lighten($warning, 45%)};
+  --el-color-warning-light-3: #{color.adjust($warning, $lightness: 15%)};
+  --el-color-warning-light-5: #{color.adjust($warning, $lightness: 25%)};
+  --el-color-warning-light-7: #{color.adjust($warning, $lightness: 35%)};
+  --el-color-warning-light-8: #{color.adjust($warning, $lightness: 40%)};
+  --el-color-warning-light-9: #{color.adjust($warning, $lightness: 45%)};
 
   // 危险色
   --el-color-danger: #{$danger};
-  --el-color-danger-light-3: #{lighten($danger, 15%)};
-  --el-color-danger-light-5: #{lighten($danger, 25%)};
-  --el-color-danger-light-7: #{lighten($danger, 35%)};
-  --el-color-danger-light-8: #{lighten($danger, 40%)};
-  --el-color-danger-light-9: #{lighten($danger, 45%)};
+  --el-color-danger-light-3: #{color.adjust($danger, $lightness: 15%)};
+  --el-color-danger-light-5: #{color.adjust($danger, $lightness: 25%)};
+  --el-color-danger-light-7: #{color.adjust($danger, $lightness: 35%)};
+  --el-color-danger-light-8: #{color.adjust($danger, $lightness: 40%)};
+  --el-color-danger-light-9: #{color.adjust($danger, $lightness: 45%)};
 
   // 信息色
   --el-color-info: #{$gray-400};
@@ -106,8 +107,8 @@ html.dark {
     &:focus {
       background: linear-gradient(
         135deg,
-        lighten($primary-start, 5%) 0%,
-        lighten($primary-end, 5%) 100%
+        color.adjust($primary-start, $lightness: 5%) 0%,
+        color.adjust($primary-end, $lightness: 5%) 100%
       ) !important;
       box-shadow: 0 6px 20px rgba($primary-start, 0.4);
     }

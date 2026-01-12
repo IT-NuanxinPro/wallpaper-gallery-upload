@@ -164,10 +164,22 @@ export const useUploadStore = defineStore('upload', () => {
         status: 'success'
       })
 
-      return true
+      return { success: true }
     } catch (error) {
       uploadFile.status = 'error'
-      uploadFile.error = error.message || '上传失败'
+
+      // 根据错误类型设置更具体的错误信息
+      if (error.type === 'PERMISSION_DENIED') {
+        uploadFile.error = '权限不足：您没有该仓库的写入权限'
+      } else if (error.type === 'RATE_LIMITED') {
+        uploadFile.error = 'API 请求过于频繁，请稍后重试'
+      } else if (error.type === 'TOKEN_EXPIRED') {
+        uploadFile.error = '登录已过期，请重新登录'
+      } else if (error.type === 'NETWORK_ERROR') {
+        uploadFile.error = '网络连接失败，请检查网络'
+      } else {
+        uploadFile.error = error.message || '上传失败'
+      }
 
       // 添加失败记录
       historyStore.addRecord({
@@ -177,7 +189,7 @@ export const useUploadStore = defineStore('upload', () => {
         status: 'error'
       })
 
-      return false
+      return { success: false, errorType: error.type, error: uploadFile.error }
     }
   }
 
@@ -190,13 +202,27 @@ export const useUploadStore = defineStore('upload', () => {
 
     uploading.value = true
     const results = []
+    let permissionError = false
 
     for (let i = 0; i < files.value.length; i++) {
       const file = files.value[i]
       if (file.status === 'pending') {
         currentFileIndex.value = i
-        const success = await uploadFile(file)
-        results.push({ file, success })
+        const result = await uploadFile(file)
+        results.push({ file, ...result })
+
+        // 如果是权限错误，停止后续上传
+        if (result.errorType === 'PERMISSION_DENIED') {
+          permissionError = true
+          // 将剩余待上传文件标记为错误
+          files.value.forEach(f => {
+            if (f.status === 'pending') {
+              f.status = 'error'
+              f.error = '权限不足：您没有该仓库的写入权限'
+            }
+          })
+          break
+        }
 
         // 上传间隔，避免触发 API 限流
         if (i < files.value.length - 1) {
@@ -208,7 +234,8 @@ export const useUploadStore = defineStore('upload', () => {
     currentFileIndex.value = -1
     uploading.value = false
 
-    return results
+    // 返回结果，包含权限错误标记
+    return { results, permissionError }
   }
 
   // 获取 API 配额信息

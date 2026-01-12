@@ -12,6 +12,7 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref(localStorage.getItem(STORAGE_KEYS.TOKEN) || null)
   const user = ref(JSON.parse(localStorage.getItem(STORAGE_KEYS.USER) || 'null'))
   const permissionLevel = ref('none') // admin | write | read | none
+  const permissionChecked = ref(false) // 权限是否已检查完成
   const loading = ref(false)
 
   // 计算属性
@@ -95,8 +96,11 @@ export const useAuthStore = defineStore('auth', () => {
 
   // 检查仓库权限
   async function checkPermission(owner, repo) {
+    permissionChecked.value = false
+
     if (!token.value) {
       permissionLevel.value = 'none'
+      permissionChecked.value = true
       return 'none'
     }
 
@@ -107,6 +111,8 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       permissionLevel.value = 'none'
       return 'none'
+    } finally {
+      permissionChecked.value = true
     }
   }
 
@@ -115,6 +121,7 @@ export const useAuthStore = defineStore('auth', () => {
     setToken(null)
     setUser(null)
     permissionLevel.value = 'none'
+    permissionChecked.value = false
   }
 
   // 初始化时设置 token
@@ -127,6 +134,7 @@ export const useAuthStore = defineStore('auth', () => {
     token,
     user,
     permissionLevel,
+    permissionChecked,
     loading,
     // 计算属性
     isAuthenticated,

@@ -95,6 +95,25 @@ class GitHubService {
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}))
+
+        // 403 权限不足
+        if (response.status === 403 && remaining !== '0') {
+          throw {
+            type: 'PERMISSION_DENIED',
+            message: '权限不足，您没有该仓库的写入权限',
+            status: response.status
+          }
+        }
+
+        // 404 资源不存在
+        if (response.status === 404) {
+          throw {
+            type: 'NOT_FOUND',
+            message: error.message || '资源不存在',
+            status: response.status
+          }
+        }
+
         throw {
           type: 'API_ERROR',
           message: error.message || `请求失败: ${response.status}`,

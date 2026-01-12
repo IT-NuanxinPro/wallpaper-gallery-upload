@@ -26,7 +26,7 @@ export function getAuthUrl() {
 
 // 生成随机 state 防止 CSRF
 function generateState() {
-  const state = crypto.randomUUID()
+  const state = globalThis.crypto.randomUUID()
   sessionStorage.setItem('oauth_state', state)
   return state
 }
