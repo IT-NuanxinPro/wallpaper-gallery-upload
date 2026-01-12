@@ -8,7 +8,7 @@ export const oauthConfig = {
   // 回调地址
   redirectUri: import.meta.env.DEV
     ? 'http://localhost:5173/callback'
-    : 'https://wallpaper-admin.061129.xyz/callback',
+    : 'https://wallpaper-gallery-studio.061129.xyz/callback',
   // 请求的权限范围
   scope: 'repo'
 }
