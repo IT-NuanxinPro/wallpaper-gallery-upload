@@ -115,20 +115,14 @@
             <div class="login__actions">
               <button
                 class="login__btn login__btn--primary"
-                :disabled="!authStore.permissionChecked || !authStore.canUpload"
+                :disabled="!authStore.permissionChecked"
                 @click="goToUpload"
               >
                 <span v-if="!authStore.permissionChecked" class="login__btn-text"
                   >检查权限中...</span
                 >
-                <span v-else class="login__btn-text">{{
-                  authStore.canUpload ? '进入工作台' : '无上传权限'
-                }}</span>
-                <span
-                  v-if="authStore.permissionChecked && authStore.canUpload"
-                  class="login__btn-icon"
-                  >→</span
-                >
+                <span v-else class="login__btn-text">进入工作台</span>
+                <span v-if="authStore.permissionChecked" class="login__btn-icon">→</span>
               </button>
               <button class="login__btn login__btn--ghost" @click="handleLogout">退出登录</button>
             </div>

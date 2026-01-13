@@ -305,18 +305,234 @@ class GitHubService {
   // ============ Workflow ============
 
   /**
+   * 获取仓库的所有 tags
+   */
+  async getTags(owner, repo, perPage = 10) {
+    const endpoint = `/repos/${owner}/${repo}/tags?per_page=${perPage}`
+    return this.request(endpoint)
+  }
+
+  /**
+   * 获取上次发布的处理统计（上次 tag 到上上次 tag 之间的变化）
+   */
+  async getLastReleaseStats(owner, repo) {
+    try {
+      const tags = await this.getTags(owner, repo, 3)
+      if (tags.length < 2) {
+        return { processedCount: 0, latestTag: tags[0]?.name || null, previousTag: null }
+      }
+
+      const latestTag = tags[0].name
+      const previousTag = tags[1].name
+
+      const comparison = await this.compareCommits(owner, repo, previousTag, latestTag)
+
+      // 统计处理的图片数（preview 目录下的 webp 文件）
+      const processedFiles = (comparison.files || []).filter(
+        f =>
+          f.status === 'added' && f.filename.startsWith('preview/') && f.filename.endsWith('.webp')
+      )
+
+      return {
+        processedCount: processedFiles.length,
+        latestTag,
+        previousTag,
+        totalFiles: comparison.files?.length || 0
+      }
+    } catch (error) {
+      console.error('Failed to get last release stats:', error)
+      return { processedCount: 0, latestTag: null, previousTag: null }
+    }
+  }
+
+  /**
+   * 获取 stats.json 统计文件
+   */
+  async getStats(owner, repo, branch = 'main') {
+    try {
+      const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/stats.json?t=${Date.now()}`
+      const response = await fetch(url)
+      if (!response.ok) return null
+      return await response.json()
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 获取最新的 tag（包含详细信息）
+   */
+  async getLatestTag(owner, repo) {
+    try {
+      const tags = await this.getTags(owner, repo, 1)
+      if (!tags[0]) return null
+
+      const tag = tags[0]
+      // 获取 tag 对应的 commit 详情
+      const commit = await this.request(`/repos/${owner}/${repo}/commits/${tag.commit.sha}`)
+
+      return {
+        name: tag.name,
+        sha: tag.commit.sha,
+        date: commit.commit.committer.date,
+        author: commit.commit.author.name,
+        message: commit.commit.message
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 对比两个 commit/tag 之间的差异
+   */
+  async compareCommits(owner, repo, base, head) {
+    // 添加时间戳避免缓存
+    const endpoint = `/repos/${owner}/${repo}/compare/${base}...${head}`
+    return this.request(endpoint)
+  }
+
+  /**
+   * 获取待处理的新图片（基于最新 tag 到 HEAD 的 diff）
+   */
+  async getPendingImages(owner, repo, branch = 'main') {
+    try {
+      const latestTag = await this.getLatestTag(owner, repo)
+
+      if (!latestTag) {
+        // 没有 tag，返回空（首次需要手动处理）
+        return {
+          pendingCount: 0,
+          pendingFiles: [],
+          latestTag: null,
+          latestTagInfo: null,
+          message: '没有找到版本标签，请先手动运行工作流'
+        }
+      }
+
+      // 先获取最新的 branch HEAD commit
+      const branchRef = await this.request(`/repos/${owner}/${repo}/git/ref/heads/${branch}`)
+      const headSha = branchRef.object.sha
+
+      // 使用 commit SHA 而不是 branch 名称，确保获取最新数据
+      const comparison = await this.compareCommits(owner, repo, latestTag.sha, headSha)
+
+      // 筛选新增的图片文件
+      const imageExtensions = /\.(jpg|jpeg|png)$/i
+      const pendingFiles = (comparison.files || [])
+        .filter(
+          f =>
+            f.status === 'added' &&
+            f.filename.startsWith('wallpaper/') &&
+            imageExtensions.test(f.filename)
+        )
+        .map(f => ({
+          filename: f.filename,
+          status: f.status,
+          // 解析路径信息
+          series: f.filename.split('/')[1], // desktop/mobile/avatar
+          category: f.filename.split('/').slice(2, -1).join('/')
+        }))
+
+      return {
+        pendingCount: pendingFiles.length,
+        pendingFiles,
+        latestTag: latestTag.name,
+        latestTagInfo: latestTag,
+        totalCommits: comparison.total_commits,
+        aheadBy: comparison.ahead_by
+      }
+    } catch (error) {
+      console.error('Failed to get pending images:', error)
+      return {
+        pendingCount: 0,
+        pendingFiles: [],
+        latestTag: null,
+        latestTagInfo: null,
+        error: error.message
+      }
+    }
+  }
+
+  /**
    * 触发 GitHub Actions workflow (repository_dispatch)
+   * 注意：需要对目标仓库有写入权限
    */
   async triggerWorkflow(owner, repo, eventType = 'process-wallpapers', payload = {}) {
     const endpoint = `/repos/${owner}/${repo}/dispatches`
 
-    return this.request(endpoint, {
-      method: 'POST',
-      body: JSON.stringify({
-        event_type: eventType,
-        client_payload: payload
+    try {
+      return await this.request(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          event_type: eventType,
+          client_payload: payload
+        })
       })
-    })
+    } catch (error) {
+      // 404 通常表示没有权限访问该仓库
+      if (error.status === 404 || error.type === 'NOT_FOUND') {
+        throw {
+          type: 'WORKFLOW_PERMISSION_DENIED',
+          message: `无法触发工作流：您没有 ${owner}/${repo} 仓库的写入权限。请确保您的 GitHub 账号对该仓库有 push 权限。`
+        }
+      }
+      throw error
+    }
+  }
+
+  /**
+   * 删除 tag
+   */
+  async deleteTag(owner, repo, tagName) {
+    const endpoint = `/repos/${owner}/${repo}/git/refs/tags/${tagName}`
+    return this.request(endpoint, { method: 'DELETE' })
+  }
+
+  /**
+   * 删除 release
+   */
+  async deleteRelease(owner, repo, releaseId) {
+    const endpoint = `/repos/${owner}/${repo}/releases/${releaseId}`
+    return this.request(endpoint, { method: 'DELETE' })
+  }
+
+  /**
+   * 获取 tag 对应的 release
+   */
+  async getReleaseByTag(owner, repo, tagName) {
+    try {
+      const endpoint = `/repos/${owner}/${repo}/releases/tags/${tagName}`
+      return await this.request(endpoint)
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 回滚到上一个 tag（删除最新 tag 和对应的 release）
+   */
+  async rollbackToLastTag(owner, repo) {
+    const tags = await this.getTags(owner, repo, 2)
+    if (tags.length < 2) {
+      throw { type: 'ROLLBACK_ERROR', message: '没有足够的 tag 可以回滚' }
+    }
+
+    const latestTag = tags[0].name
+
+    // 1. 删除 release（如果存在）
+    const release = await this.getReleaseByTag(owner, repo, latestTag)
+    if (release) {
+      await this.deleteRelease(owner, repo, release.id)
+    }
+
+    // 2. 删除 tag
+    await this.deleteTag(owner, repo, latestTag)
+
+    return {
+      deletedTag: latestTag,
+      newLatestTag: tags[1].name
+    }
   }
 
   /**

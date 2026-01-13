@@ -93,7 +93,12 @@ export const useUploadStore = defineStore('upload', () => {
           preview: createPreview(file),
           status: 'pending',
           progress: 0,
-          error: null
+          error: null,
+          // 每个文件独立的目标路径，默认使用全局设置
+          targetPath: targetPath.value,
+          targetSeries: series.value,
+          targetL1: categoryL1.value,
+          targetL2: categoryL2.value
         })
       } else {
         // 可以在这里触发错误提示
@@ -103,6 +108,36 @@ export const useUploadStore = defineStore('upload', () => {
 
     files.value.push(...validFiles)
     return validFiles
+  }
+
+  // 更新单个文件的目标路径
+  function updateFileTarget(fileId, newSeries, l1, l2 = '') {
+    const file = files.value.find(f => f.id === fileId)
+    if (file && file.status === 'pending') {
+      file.targetSeries = newSeries
+      file.targetL1 = l1
+      file.targetL2 = l2
+      const parts = ['wallpaper', newSeries, l1]
+      if (l2) parts.push(l2)
+      file.targetPath = parts.join('/')
+    }
+  }
+
+  // 批量更新文件目标路径（选中的文件）
+  function updateFilesTarget(fileIds, newSeries, l1, l2 = '') {
+    const parts = ['wallpaper', newSeries, l1]
+    if (l2) parts.push(l2)
+    const newPath = parts.join('/')
+
+    fileIds.forEach(id => {
+      const file = files.value.find(f => f.id === id)
+      if (file && file.status === 'pending') {
+        file.targetSeries = newSeries
+        file.targetL1 = l1
+        file.targetL2 = l2
+        file.targetPath = newPath
+      }
+    })
   }
 
   // 移除文件
@@ -115,10 +150,34 @@ export const useUploadStore = defineStore('upload', () => {
     }
   }
 
+  // 批量移除文件
+  function removeFiles(ids) {
+    ids.forEach(id => {
+      const index = files.value.findIndex(f => f.id === id)
+      if (index > -1) {
+        URL.revokeObjectURL(files.value[index].preview)
+        files.value.splice(index, 1)
+      }
+    })
+  }
+
   // 清空所有文件
   function clearFiles() {
     files.value.forEach(f => URL.revokeObjectURL(f.preview))
     files.value = []
+  }
+
+  // 清理成功上传的文件（释放内存）
+  function clearSuccessFiles() {
+    const successIds = files.value.filter(f => f.status === 'success').map(f => f.id)
+    successIds.forEach(id => {
+      const index = files.value.findIndex(f => f.id === id)
+      if (index > -1) {
+        URL.revokeObjectURL(files.value[index].preview)
+        files.value.splice(index, 1)
+      }
+    })
+    return successIds.length
   }
 
   // 检查文件是否存在
@@ -130,42 +189,153 @@ export const useUploadStore = defineStore('upload', () => {
     return githubService.checkFileExists(owner, repo, path, branch)
   }
 
+  // 批量检查重复文件
+  async function checkDuplicates(filenames) {
+    const configStore = useConfigStore()
+    const { owner, repo, branch } = configStore.config
+    const duplicates = []
+
+    for (const filename of filenames) {
+      const path = `${targetPath.value}/${filename}`
+      const exists = await githubService.checkFileExists(owner, repo, path, branch)
+      if (exists) {
+        duplicates.push(filename)
+      }
+    }
+
+    return duplicates
+  }
+
+  // 计算文件内容 Hash（用于检测内容重复）
+  async function computeFileHash(file) {
+    const buffer = await file.arrayBuffer()
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
+    const hashArray = Array.from(new Uint8Array(hashBuffer))
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+  }
+
+  // 检查本地上传记录（避免同一会话重复上传）
+  const HASH_STORAGE_KEY = 'uploaded_hashes'
+  const HASH_MAX_COUNT = 500 // 最多保留 500 条
+  const HASH_EXPIRE_DAYS = 30 // 30 天后过期
+
+  function getUploadedHashes() {
+    try {
+      const stored = localStorage.getItem(HASH_STORAGE_KEY)
+      if (!stored) return {}
+
+      const hashes = JSON.parse(stored)
+      const now = Date.now()
+      const expireMs = HASH_EXPIRE_DAYS * 24 * 60 * 60 * 1000
+
+      // 过滤掉过期的记录
+      const valid = {}
+      for (const [hash, data] of Object.entries(hashes)) {
+        if (now - data.time < expireMs) {
+          valid[hash] = data
+        }
+      }
+
+      // 如果有过期记录被清理，更新存储
+      if (Object.keys(valid).length < Object.keys(hashes).length) {
+        localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(valid))
+      }
+
+      return valid
+    } catch {
+      return {}
+    }
+  }
+
+  function addUploadedHash(hash, filename, path) {
+    const hashes = getUploadedHashes()
+    hashes[hash] = { filename, path, time: Date.now() }
+
+    // 超过上限时，删除最旧的记录
+    const entries = Object.entries(hashes)
+    if (entries.length > HASH_MAX_COUNT) {
+      entries.sort((a, b) => b[1].time - a[1].time)
+      const trimmed = Object.fromEntries(entries.slice(0, HASH_MAX_COUNT))
+      localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(trimmed))
+    } else {
+      localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(hashes))
+    }
+  }
+
+  function isHashUploaded(hash) {
+    const hashes = getUploadedHashes()
+    return hashes[hash] || null
+  }
+
+  // 清除上传记录（手动清理）
+  function clearUploadedHashes() {
+    localStorage.removeItem(HASH_STORAGE_KEY)
+  }
+
   // 上传单个文件
   async function uploadFile(uploadFile) {
     const configStore = useConfigStore()
     const historyStore = useHistoryStore()
     const { owner, repo, branch } = configStore.config
 
+    // 使用文件自己的目标路径，如果没有则使用全局的
+    const fileTargetPath = uploadFile.targetPath || targetPath.value
+    const fileSeries = uploadFile.targetSeries || series.value
+
+    if (!fileTargetPath) {
+      uploadFile.status = 'error'
+      uploadFile.error = '未设置上传目录'
+      return { success: false, errorType: 'NO_TARGET', error: uploadFile.error }
+    }
+
     uploadFile.status = 'uploading'
     uploadFile.progress = 0
 
+    // 模拟进度（GitHub API 不支持进度回调）
+    const progressInterval = setInterval(() => {
+      if (uploadFile.progress < 90) {
+        uploadFile.progress += 10
+      }
+    }, 200)
+
     try {
-      const path = `${targetPath.value}/${uploadFile.name}`
+      const path = `${fileTargetPath}/${uploadFile.name}`
       const message = `Upload: ${uploadFile.name}`
 
-      // 模拟进度（GitHub API 不支持进度回调）
-      const progressInterval = setInterval(() => {
-        if (uploadFile.progress < 90) {
-          uploadFile.progress += 10
-        }
-      }, 200)
+      // 计算文件 Hash 并检查是否已上传
+      const hash = await computeFileHash(uploadFile.file)
+      const existingUpload = isHashUploaded(hash)
+      if (existingUpload) {
+        clearInterval(progressInterval)
+        uploadFile.status = 'error'
+        uploadFile.error = `文件内容重复，已在 ${existingUpload.path} 上传过`
+        return { success: false, errorType: 'DUPLICATE', error: uploadFile.error }
+      }
 
       await githubService.uploadImage(owner, repo, path, uploadFile.file, message, branch)
 
-      clearInterval(progressInterval)
       uploadFile.progress = 100
       uploadFile.status = 'success'
+
+      // 清理进度定时器
+      clearInterval(progressInterval)
+
+      // 记录已上传的 Hash
+      addUploadedHash(hash, uploadFile.name, path)
 
       // 添加到历史记录
       historyStore.addRecord({
         filename: uploadFile.name,
-        category: targetPath.value,
-        series: series.value,
+        category: fileTargetPath,
+        series: fileSeries,
         status: 'success'
       })
 
       return { success: true }
     } catch (error) {
+      // 清理进度定时器
+      clearInterval(progressInterval)
+
       uploadFile.status = 'error'
 
       // 根据错误类型设置更具体的错误信息
@@ -177,6 +347,8 @@ export const useUploadStore = defineStore('upload', () => {
         uploadFile.error = '登录已过期，请重新登录'
       } else if (error.type === 'NETWORK_ERROR') {
         uploadFile.error = '网络连接失败，请检查网络'
+      } else if (error.message?.includes('sha') || error.message?.includes('already exists')) {
+        uploadFile.error = '文件已存在，请勿重复上传'
       } else {
         uploadFile.error = error.message || '上传失败'
       }
@@ -184,8 +356,8 @@ export const useUploadStore = defineStore('upload', () => {
       // 添加失败记录
       historyStore.addRecord({
         filename: uploadFile.name,
-        category: targetPath.value,
-        series: series.value,
+        category: fileTargetPath,
+        series: fileSeries,
         status: 'error'
       })
 
@@ -196,8 +368,11 @@ export const useUploadStore = defineStore('upload', () => {
   // 上传所有待上传文件
   async function uploadAll() {
     if (uploading.value || pendingFiles.value.length === 0) return
-    if (!targetPath.value) {
-      throw new Error('请先选择上传目录')
+
+    // 检查是否所有待上传文件都有目标路径
+    const filesWithoutTarget = pendingFiles.value.filter(f => !f.targetPath)
+    if (filesWithoutTarget.length > 0) {
+      throw new Error(`有 ${filesWithoutTarget.length} 个文件未设置上传目录`)
     }
 
     uploading.value = true
@@ -292,15 +467,23 @@ export const useUploadStore = defineStore('upload', () => {
     validateFile,
     addFiles,
     removeFile,
+    removeFiles,
     clearFiles,
     checkDuplicate,
     uploadFile,
     uploadAll,
     retryFailed,
     setTarget,
+    updateFileTarget,
+    updateFilesTarget,
     getRateLimit,
     shouldWarnBatchUpload,
-    estimateUploadTime
+    estimateUploadTime,
+    clearSuccessFiles,
+    checkDuplicates,
+    computeFileHash,
+    isHashUploaded,
+    clearUploadedHashes
   }
 })
 

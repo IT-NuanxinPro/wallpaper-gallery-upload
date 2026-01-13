@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useConfigStore } from '@/stores/config'
 
 // 路由配置
 const routes = [
@@ -45,7 +46,7 @@ const router = createRouter({
 })
 
 // 路由守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
 
   // 需要认证的页面
@@ -58,6 +59,15 @@ router.beforeEach((to, from, next) => {
   if (to.name === 'Login' && authStore.isAuthenticated) {
     next({ name: 'Upload' })
     return
+  }
+
+  // 已登录但权限未检查，自动检查权限
+  if (to.meta.requiresAuth && authStore.isAuthenticated && !authStore.permissionChecked) {
+    const configStore = useConfigStore()
+    const { owner, repo } = configStore.config
+    if (owner && repo) {
+      await authStore.checkPermission(owner, repo)
+    }
   }
 
   next()

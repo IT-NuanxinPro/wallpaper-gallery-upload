@@ -31,6 +31,16 @@
           </nav>
 
           <div class="layout__nav-right">
+            <!-- 权限标签 -->
+            <el-tag
+              v-if="authStore.permissionChecked"
+              :type="permissionTagType"
+              size="small"
+              class="layout__permission-tag"
+            >
+              {{ permissionLabel }}
+            </el-tag>
+
             <el-dropdown trigger="click" @command="handleCommand">
               <div class="layout__user">
                 <el-avatar :size="32" :src="authStore.user?.avatar_url" />
@@ -63,6 +73,7 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Upload, Clock, Setting, ArrowDown, SwitchButton } from '@element-plus/icons-vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
@@ -73,6 +84,27 @@ import { useAuthStore } from '@/stores/auth'
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
+
+// 权限标签
+const permissionLabel = computed(() => {
+  const map = {
+    admin: '管理员',
+    write: '可写',
+    read: '只读',
+    none: '无权限'
+  }
+  return map[authStore.permissionLevel] || '未知'
+})
+
+const permissionTagType = computed(() => {
+  const map = {
+    admin: 'success',
+    write: 'primary',
+    read: 'warning',
+    none: 'danger'
+  }
+  return map[authStore.permissionLevel] || 'info'
+})
 
 const navItems = [
   { path: '/upload', label: '上传', icon: Upload },
@@ -132,7 +164,9 @@ async function handleCommand(command) {
 
     &-right {
       display: flex;
+      align-items: center;
       justify-content: flex-end;
+      gap: $spacing-3;
     }
 
     &-center {
@@ -198,6 +232,10 @@ async function handleCommand(command) {
       padding: 2px 8px;
       border-radius: 4px;
     }
+  }
+
+  &__permission-tag {
+    font-size: $font-size-xs;
   }
 
   &__user {

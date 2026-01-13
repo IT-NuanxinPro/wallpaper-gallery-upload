@@ -22,6 +22,7 @@ export default [
         localStorage: 'readonly',
         sessionStorage: 'readonly',
         fetch: 'readonly',
+        crypto: 'readonly',
         URL: 'readonly',
         URLSearchParams: 'readonly',
         FileReader: 'readonly',

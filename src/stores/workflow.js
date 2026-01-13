@@ -2,175 +2,234 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { githubService } from '@/services/github'
 
-// 工作流仓库配置
-const WORKFLOW_REPO = {
-  owner: 'IT-NuanxinPro',
-  repo: 'wallpaper-gallery-workflow'
-}
-
-// 状态轮询间隔
-const POLL_INTERVAL = 5000 // 5秒
-
 export const useWorkflowStore = defineStore('workflow', () => {
   // 状态
   const loading = ref(false)
   const triggering = ref(false)
-  const latestRun = ref(null)
-  const runningWorkflow = ref(null)
-  const error = ref(null)
-  const pollTimer = ref(null)
+  const polling = ref(false)
+
+  // 待处理图片信息
+  const pendingInfo = ref({
+    pendingCount: 0,
+    pendingFiles: [],
+    latestTag: null,
+    latestTagInfo: null,
+    message: null,
+    error: null
+  })
+
+  // 上次发布统计
+  const lastReleaseStats = ref({
+    processedCount: 0,
+    latestTag: null,
+    previousTag: null
+  })
+
+  // stats.json 统计数据
+  const statsData = ref(null)
+
+  // 工作流运行状态
+  const workflowStatus = ref({
+    hasRunning: false,
+    runningWorkflow: null,
+    latestRun: null,
+    justTriggered: false // 刚触发标记
+  })
+
+  // 本次会话上传成功的文件数
+  const sessionUploadCount = ref(0)
+
+  // 轮询定时器
+  let pollTimer = null
 
   // 计算属性
-  const isRunning = computed(() => {
-    return runningWorkflow.value !== null
+  const canTrigger = computed(() => {
+    return (
+      !loading.value &&
+      !triggering.value &&
+      !workflowStatus.value.hasRunning &&
+      !workflowStatus.value.justTriggered && // 刚触发时也禁用
+      pendingInfo.value.pendingCount > 0
+    )
   })
 
   const statusText = computed(() => {
-    if (!latestRun.value) return '未知'
-
-    const { status, conclusion } = latestRun.value
-
-    if (status === 'queued') return '排队中'
-    if (status === 'in_progress') return '运行中'
-    if (status === 'completed') {
-      if (conclusion === 'success') return '成功'
-      if (conclusion === 'failure') return '失败'
-      if (conclusion === 'cancelled') return '已取消'
-      return '已完成'
+    if (workflowStatus.value.hasRunning) {
+      const run = workflowStatus.value.runningWorkflow
+      if (run?.status === 'queued') return '排队中...'
+      if (run?.status === 'in_progress') return '运行中...'
+      return '处理中...'
     }
-    return status
+    return null
   })
 
-  const statusType = computed(() => {
-    if (!latestRun.value) return 'info'
-
-    const { status, conclusion } = latestRun.value
-
-    if (status === 'queued' || status === 'in_progress') return 'warning'
-    if (status === 'completed') {
-      if (conclusion === 'success') return 'success'
-      if (conclusion === 'failure') return 'danger'
-      return 'info'
-    }
-    return 'info'
-  })
-
-  // 格式化时间
-  function formatTime(dateStr) {
-    if (!dateStr) return ''
-    const date = new Date(dateStr)
-    return date.toLocaleString('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
-  }
-
-  // 检查工作流状态
-  async function checkStatus() {
+  // 刷新待处理图片信息
+  async function refreshPendingInfo(owner, repo, branch = 'main') {
     loading.value = true
-    error.value = null
-
     try {
-      const result = await githubService.hasRunningWorkflow(WORKFLOW_REPO.owner, WORKFLOW_REPO.repo)
-
-      runningWorkflow.value = result.runningWorkflow
-      latestRun.value = result.latestRun
-
-      return result
-    } catch (e) {
-      error.value = e.message || '检查状态失败'
-      throw e
+      const info = await githubService.getPendingImages(owner, repo, branch)
+      pendingInfo.value = info
+      return info
+    } catch (error) {
+      pendingInfo.value.error = error.message
+      throw error
     } finally {
       loading.value = false
     }
   }
 
-  // 触发工作流
-  async function trigger(message = '') {
-    if (triggering.value || isRunning.value) {
-      throw new Error('工作流正在运行中，请稍后再试')
+  // 刷新上次发布统计
+  async function refreshLastReleaseStats(owner, repo) {
+    try {
+      const stats = await githubService.getLastReleaseStats(owner, repo)
+      lastReleaseStats.value = stats
+      return stats
+    } catch (error) {
+      console.error('Failed to refresh last release stats:', error)
+      return lastReleaseStats.value
     }
+  }
+
+  // 刷新 stats.json 数据
+  async function refreshStatsData(owner, repo, branch = 'main') {
+    try {
+      const data = await githubService.getStats(owner, repo, branch)
+      statsData.value = data
+      return data
+    } catch (error) {
+      console.error('Failed to refresh stats data:', error)
+      return null
+    }
+  }
+
+  // 刷新工作流状态
+  async function refreshWorkflowStatus(workflowOwner, workflowRepo) {
+    try {
+      const status = await githubService.hasRunningWorkflow(workflowOwner, workflowRepo)
+
+      // 如果检测到运行中的工作流，清除 justTriggered 标记
+      if (status.hasRunning) {
+        workflowStatus.value = { ...status, justTriggered: false }
+      } else {
+        // 没有运行中的工作流，也清除 justTriggered（可能已完成或未启动）
+        workflowStatus.value = { ...status, justTriggered: false }
+      }
+
+      return status
+    } catch (error) {
+      console.error('Failed to refresh workflow status:', error)
+      return workflowStatus.value
+    }
+  }
+
+  // 触发工作流
+  async function triggerWorkflow(workflowOwner, workflowRepo, message = '', publisher = '') {
+    if (!canTrigger.value) return false
 
     triggering.value = true
-    error.value = null
-
     try {
-      await githubService.triggerWorkflow(
-        WORKFLOW_REPO.owner,
-        WORKFLOW_REPO.repo,
-        'process-wallpapers',
-        {
-          message: message || `chore: update wallpapers [${new Date().toLocaleDateString('zh-CN')}]`
-        }
-      )
+      await githubService.triggerWorkflow(workflowOwner, workflowRepo, 'process-wallpapers', {
+        message: message || `chore: 处理 ${pendingInfo.value.pendingCount} 张新图片`,
+        publisher: publisher || ''
+      })
 
-      // 触发后等待一下再检查状态
-      await new Promise(r => setTimeout(r, 2000))
-      await checkStatus()
+      // 立即标记为刚触发状态（禁用按钮）
+      workflowStatus.value.justTriggered = true
 
-      // 开始轮询状态
-      startPolling()
+      // 触发成功后开始轮询状态（延迟 3 秒开始，给 GitHub 时间启动工作流）
+      setTimeout(() => {
+        startPolling(workflowOwner, workflowRepo)
+      }, 3000)
 
       return true
-    } catch (e) {
-      error.value = e.message || '触发失败'
-      throw e
+    } catch (error) {
+      console.error('Failed to trigger workflow:', error)
+      throw error
     } finally {
       triggering.value = false
     }
   }
 
-  // 开始轮询状态
-  function startPolling() {
+  // 回滚到上一个 tag
+  async function rollbackLastRelease(owner, repo) {
+    loading.value = true
+    try {
+      const result = await githubService.rollbackToLastTag(owner, repo)
+      return result
+    } catch (error) {
+      console.error('Failed to rollback:', error)
+      throw error
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // 开始轮询工作流状态
+  function startPolling(workflowOwner, workflowRepo, interval = 10000) {
     stopPolling()
+    polling.value = true
 
-    pollTimer.value = setInterval(async () => {
-      try {
-        const result = await checkStatus()
+    // 立即检查一次
+    refreshWorkflowStatus(workflowOwner, workflowRepo)
 
-        // 如果工作流完成，停止轮询
-        if (!result.hasRunning) {
-          stopPolling()
-        }
-      } catch (e) {
-        console.error('Poll error:', e)
+    pollTimer = setInterval(async () => {
+      const status = await refreshWorkflowStatus(workflowOwner, workflowRepo)
+
+      // 如果没有运行中的工作流，停止轮询
+      if (!status.hasRunning) {
+        stopPolling()
       }
-    }, POLL_INTERVAL)
+    }, interval)
   }
 
   // 停止轮询
   function stopPolling() {
-    if (pollTimer.value) {
-      clearInterval(pollTimer.value)
-      pollTimer.value = null
+    if (pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
     }
+    polling.value = false
   }
 
-  // 获取工作流运行链接
-  function getRunUrl() {
-    if (!latestRun.value) return null
-    return latestRun.value.html_url
+  // 增加会话上传计数
+  function addSessionUpload(count = 1) {
+    sessionUploadCount.value += count
+  }
+
+  // 重置会话上传计数
+  function resetSessionUpload() {
+    sessionUploadCount.value = 0
+  }
+
+  // 清理
+  function cleanup() {
+    stopPolling()
   }
 
   return {
     // 状态
     loading,
     triggering,
-    latestRun,
-    runningWorkflow,
-    error,
+    polling,
+    pendingInfo,
+    workflowStatus,
+    sessionUploadCount,
+    lastReleaseStats,
+    statsData,
     // 计算属性
-    isRunning,
+    canTrigger,
     statusText,
-    statusType,
     // 方法
-    checkStatus,
-    trigger,
+    refreshPendingInfo,
+    refreshLastReleaseStats,
+    refreshStatsData,
+    refreshWorkflowStatus,
+    triggerWorkflow,
+    rollbackLastRelease,
     startPolling,
     stopPolling,
-    formatTime,
-    getRunUrl
+    addSessionUpload,
+    resetSessionUpload,
+    cleanup
   }
 })

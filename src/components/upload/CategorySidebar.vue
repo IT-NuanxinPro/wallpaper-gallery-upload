@@ -47,7 +47,7 @@
     </div>
 
     <!-- 新建分类按钮 -->
-    <button class="category-sidebar__new-btn" @click="$emit('create')">
+    <button v-if="authStore.canUpload" class="category-sidebar__new-btn" @click="$emit('create')">
       <el-icon><Plus /></el-icon>
       新建分类
     </button>
@@ -56,6 +56,9 @@
 
 <script setup>
 import { Folder, Plus } from '@element-plus/icons-vue'
+import { useAuthStore } from '@/stores/auth'
+
+const authStore = useAuthStore()
 
 defineProps({
   series: { type: String, required: true },
