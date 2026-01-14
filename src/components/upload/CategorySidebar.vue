@@ -5,6 +5,9 @@
         <el-icon><Folder /></el-icon>
         分类目录
       </h3>
+      <button class="category-sidebar__refresh-btn" title="刷新目录" @click="$emit('refresh')">
+        <el-icon><Refresh /></el-icon>
+      </button>
       <el-tag v-if="!targetPath" type="warning" size="small" effect="dark">必选</el-tag>
       <el-tag v-else type="success" size="small" effect="dark">已选</el-tag>
     </div>
@@ -38,6 +41,14 @@
           <div class="category-sidebar__tree-node">
             <span class="category-sidebar__tree-icon">{{ data.type === 'l1' ? '📁' : '📂' }}</span>
             <span class="category-sidebar__tree-label">{{ node.label }}</span>
+            <button
+              v-if="authStore.canUpload"
+              class="category-sidebar__tree-delete"
+              title="删除分类"
+              @click.stop="handleDelete(data, node)"
+            >
+              <el-icon><Delete /></el-icon>
+            </button>
           </div>
         </template>
       </el-tree>
@@ -55,7 +66,7 @@
 </template>
 
 <script setup>
-import { Folder, Plus } from '@element-plus/icons-vue'
+import { Folder, Plus, Delete, Refresh } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
@@ -68,7 +79,7 @@ defineProps({
   loadNode: { type: Function, required: true }
 })
 
-const emit = defineEmits(['select-series', 'select-category', 'create'])
+const emit = defineEmits(['select-series', 'select-category', 'create', 'delete', 'refresh'])
 
 const seriesList = [
   { value: 'desktop', label: '电脑', emoji: '🖥️' },
@@ -84,6 +95,10 @@ const treeProps = {
 
 function handleNodeClick(data, node) {
   emit('select-category', { data, node })
+}
+
+function handleDelete(data, node) {
+  emit('delete', { data, node })
 }
 </script>
 
@@ -122,6 +137,29 @@ function handleNodeClick(data, node) {
 
     .el-icon {
       color: $primary-start;
+    }
+  }
+
+  &__refresh-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    background: transparent;
+    border: none;
+    border-radius: $radius-sm;
+    color: $gray-400;
+    cursor: pointer;
+    transition: all $duration-fast;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: $primary-start;
+    }
+
+    .el-icon {
+      font-size: 14px;
     }
   }
 
@@ -187,6 +225,11 @@ function handleNodeClick(data, node) {
       align-items: center;
       gap: $spacing-2;
       padding: 2px 0;
+      width: 100%;
+
+      &:hover .category-sidebar__tree-delete {
+        opacity: 1;
+      }
     }
 
     &-icon {
@@ -196,6 +239,32 @@ function handleNodeClick(data, node) {
     &-label {
       color: $gray-200;
       font-size: $font-size-sm;
+      flex: 1;
+    }
+
+    &-delete {
+      opacity: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      background: transparent;
+      border: none;
+      border-radius: $radius-sm;
+      color: $gray-500;
+      cursor: pointer;
+      transition: all $duration-fast;
+      flex-shrink: 0;
+
+      &:hover {
+        background: rgba($danger, 0.2);
+        color: $danger;
+      }
+
+      .el-icon {
+        font-size: 12px;
+      }
     }
 
     &-empty {

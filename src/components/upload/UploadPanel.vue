@@ -89,6 +89,7 @@
           <el-checkbox
             v-model="selectAll"
             :indeterminate="isIndeterminate"
+            :disabled="pendingFiles.length === 0"
             @change="handleSelectAll"
           >
             全选（用于批量删除）
@@ -118,7 +119,7 @@
           >
             <!-- 复选框 -->
             <el-checkbox
-              v-if="file.status === 'pending' && !uploading"
+              v-if="(file.status === 'pending' || file.status === 'error') && !uploading"
               v-model="selectedIds"
               :value="file.id"
               class="upload-panel__item-checkbox"
@@ -144,7 +145,7 @@
               >!</span
             >
             <button
-              v-if="file.status === 'pending'"
+              v-if="file.status === 'pending' || file.status === 'error'"
               class="upload-panel__item-remove"
               @click.stop="$emit('remove', file.id)"
             >
@@ -212,7 +213,9 @@ const isDragging = ref(false)
 const selectedIds = ref([])
 
 // 全选相关
-const pendingFiles = computed(() => props.files.filter(f => f.status === 'pending'))
+const pendingFiles = computed(() =>
+  props.files.filter(f => f.status === 'pending' || f.status === 'error')
+)
 const hasFilesWithoutTarget = computed(() => pendingFiles.value.some(f => !f.targetPath))
 const selectAll = computed({
   get: () =>

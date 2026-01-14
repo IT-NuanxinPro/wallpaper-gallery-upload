@@ -302,6 +302,22 @@ class GitHubService {
     })
   }
 
+  /**
+   * 删除文件
+   */
+  async deleteFile(owner, repo, path, sha, message, branch = 'main') {
+    const endpoint = `/repos/${owner}/${repo}/contents/${path}`
+
+    return this.request(endpoint, {
+      method: 'DELETE',
+      body: JSON.stringify({
+        message,
+        sha,
+        branch
+      })
+    })
+  }
+
   // ============ Workflow ============
 
   /**
@@ -510,28 +526,27 @@ class GitHubService {
   }
 
   /**
-   * 回滚到上一个 tag（删除最新 tag 和对应的 release）
+   * 回滚到上一个 tag（触发工作流进行完整回滚）
+   * 会删除该 tag 新增的文件、更新 timestamps、删除 tag 和 release
    */
-  async rollbackToLastTag(owner, repo) {
-    const tags = await this.getTags(owner, repo, 2)
-    if (tags.length < 2) {
-      throw { type: 'ROLLBACK_ERROR', message: '没有足够的 tag 可以回滚' }
+  async rollbackToLastTag(owner, repo, workflowOwner, workflowRepo, tagName = '') {
+    // 如果没有指定 tag，获取最新的
+    if (!tagName) {
+      const tags = await this.getTags(owner, repo, 2)
+      if (tags.length < 1) {
+        throw { type: 'ROLLBACK_ERROR', message: '没有 tag 可以回滚' }
+      }
+      tagName = tags[0].name
     }
 
-    const latestTag = tags[0].name
-
-    // 1. 删除 release（如果存在）
-    const release = await this.getReleaseByTag(owner, repo, latestTag)
-    if (release) {
-      await this.deleteRelease(owner, repo, release.id)
-    }
-
-    // 2. 删除 tag
-    await this.deleteTag(owner, repo, latestTag)
+    // 触发回滚工作流
+    await this.triggerWorkflow(workflowOwner, workflowRepo, 'rollback-release', {
+      tag: tagName
+    })
 
     return {
-      deletedTag: latestTag,
-      newLatestTag: tags[1].name
+      deletedTag: tagName,
+      message: '回滚工作流已触发，请等待完成'
     }
   }
 

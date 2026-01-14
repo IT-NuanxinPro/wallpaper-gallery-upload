@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { githubService } from '@/services/github'
+import { gistStorage } from '@/services/gistStorage'
 
 const STORAGE_KEYS = {
   TOKEN: 'wallpaper_admin_token',
@@ -25,9 +26,15 @@ export const useAuthStore = defineStore('auth', () => {
     if (newToken) {
       localStorage.setItem(STORAGE_KEYS.TOKEN, newToken)
       githubService.setToken(newToken)
+      // 初始化 Gist 存储
+      gistStorage.setToken(newToken)
+      gistStorage.init().catch(err => {
+        console.warn('Failed to init gist storage:', err)
+      })
     } else {
       localStorage.removeItem(STORAGE_KEYS.TOKEN)
       githubService.setToken(null)
+      gistStorage.cleanup()
     }
   }
 
@@ -127,6 +134,11 @@ export const useAuthStore = defineStore('auth', () => {
   // 初始化时设置 token
   if (token.value) {
     githubService.setToken(token.value)
+    // 初始化 Gist 存储
+    gistStorage.setToken(token.value)
+    gistStorage.init().catch(err => {
+      console.warn('Failed to init gist storage:', err)
+    })
   }
 
   return {

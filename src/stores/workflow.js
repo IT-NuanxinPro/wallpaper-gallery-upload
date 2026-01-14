@@ -33,7 +33,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     hasRunning: false,
     runningWorkflow: null,
     latestRun: null,
-    justTriggered: false // 刚触发标记
+    justTriggered: false,
+    triggerTime: null // 触发时间
   })
 
   // 本次会话上传成功的文件数
@@ -41,19 +42,49 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   // 轮询定时器
   let pollTimer = null
+  // 延迟定时器（用于触发后延迟开始轮询、完成后延迟刷新等）
+  let delayTimers = []
+  // 轮询配置
+  let pollConfig = { owner: '', repo: '', imageOwner: '', imageRepo: '', branch: '' }
 
-  // 计算属性
+  // 添加延迟定时器（便于统一清理）
+  function addDelayTimer(callback, delay) {
+    const timer = setTimeout(() => {
+      // 执行后从列表中移除
+      delayTimers = delayTimers.filter(t => t !== timer)
+      callback()
+    }, delay)
+    delayTimers.push(timer)
+    return timer
+  }
+
+  // 清理所有延迟定时器
+  function clearDelayTimers() {
+    delayTimers.forEach(timer => clearTimeout(timer))
+    delayTimers = []
+  }
+
+  // 计算属性：是否可以触发
   const canTrigger = computed(() => {
-    return (
-      !loading.value &&
-      !triggering.value &&
-      !workflowStatus.value.hasRunning &&
-      !workflowStatus.value.justTriggered && // 刚触发时也禁用
-      pendingInfo.value.pendingCount > 0
-    )
+    // 正在加载或触发中
+    if (loading.value || triggering.value) return false
+    // 刚触发或正在运行
+    if (workflowStatus.value.justTriggered || workflowStatus.value.hasRunning) return false
+    // 没有待处理图片
+    if (pendingInfo.value.pendingCount === 0) return false
+    return true
   })
 
+  // 计算属性：是否正在运行（包括刚触发）
+  const isRunning = computed(() => {
+    return workflowStatus.value.justTriggered || workflowStatus.value.hasRunning
+  })
+
+  // 计算属性：状态文本
   const statusText = computed(() => {
+    if (workflowStatus.value.justTriggered) {
+      return '已触发，等待启动...'
+    }
     if (workflowStatus.value.hasRunning) {
       const run = workflowStatus.value.runningWorkflow
       if (run?.status === 'queued') return '排队中...'
@@ -107,12 +138,34 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const status = await githubService.hasRunningWorkflow(workflowOwner, workflowRepo)
 
-      // 如果检测到运行中的工作流，清除 justTriggered 标记
+      // 如果检测到运行中的工作流
       if (status.hasRunning) {
-        workflowStatus.value = { ...status, justTriggered: false }
+        workflowStatus.value = {
+          ...status,
+          justTriggered: false, // 已经开始运行，清除刚触发标记
+          triggerTime: workflowStatus.value.triggerTime
+        }
       } else {
-        // 没有运行中的工作流，也清除 justTriggered（可能已完成或未启动）
-        workflowStatus.value = { ...status, justTriggered: false }
+        // 没有运行中的工作流
+        const wasRunning = workflowStatus.value.hasRunning || workflowStatus.value.justTriggered
+
+        workflowStatus.value = {
+          ...status,
+          justTriggered: false,
+          triggerTime: null
+        }
+
+        // 如果之前在运行，现在完成了，刷新相关数据
+        if (wasRunning && pollConfig.imageOwner) {
+          // 延迟刷新，等待 GitHub API 同步
+          addDelayTimer(async () => {
+            await Promise.all([
+              refreshPendingInfo(pollConfig.imageOwner, pollConfig.imageRepo, pollConfig.branch),
+              refreshLastReleaseStats(pollConfig.imageOwner, pollConfig.imageRepo),
+              refreshStatsData(pollConfig.imageOwner, pollConfig.imageRepo, pollConfig.branch)
+            ])
+          }, 2000)
+        }
       }
 
       return status
@@ -133,11 +186,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
         publisher: publisher || ''
       })
 
-      // 立即标记为刚触发状态（禁用按钮）
+      // 立即标记为刚触发状态
       workflowStatus.value.justTriggered = true
+      workflowStatus.value.triggerTime = Date.now()
 
-      // 触发成功后开始轮询状态（延迟 3 秒开始，给 GitHub 时间启动工作流）
-      setTimeout(() => {
+      // 触发成功后开始轮询状态
+      addDelayTimer(() => {
         startPolling(workflowOwner, workflowRepo)
       }, 3000)
 
@@ -150,11 +204,32 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  // 回滚到上一个 tag
-  async function rollbackLastRelease(owner, repo) {
+  // 回滚到上一个 tag（触发工作流进行完整回滚）
+  async function rollbackLastRelease(
+    imageOwner,
+    imageRepo,
+    workflowOwner,
+    workflowRepo,
+    tagName = ''
+  ) {
     loading.value = true
     try {
-      const result = await githubService.rollbackToLastTag(owner, repo)
+      const result = await githubService.rollbackToLastTag(
+        imageOwner,
+        imageRepo,
+        workflowOwner,
+        workflowRepo,
+        tagName
+      )
+
+      // 标记为刚触发状态，开始轮询
+      workflowStatus.value.justTriggered = true
+      workflowStatus.value.triggerTime = Date.now()
+
+      addDelayTimer(() => {
+        startPolling(workflowOwner, workflowRepo)
+      }, 3000)
+
       return result
     } catch (error) {
       console.error('Failed to rollback:', error)
@@ -165,9 +240,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   // 开始轮询工作流状态
-  function startPolling(workflowOwner, workflowRepo, interval = 10000) {
+  function startPolling(workflowOwner, workflowRepo, interval = 8000) {
     stopPolling()
     polling.value = true
+
+    // 保存配置用于完成后刷新
+    pollConfig.owner = workflowOwner
+    pollConfig.repo = workflowRepo
 
     // 立即检查一次
     refreshWorkflowStatus(workflowOwner, workflowRepo)
@@ -175,9 +254,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
     pollTimer = setInterval(async () => {
       const status = await refreshWorkflowStatus(workflowOwner, workflowRepo)
 
-      // 如果没有运行中的工作流，停止轮询
-      if (!status.hasRunning) {
+      // 如果没有运行中的工作流且不是刚触发状态，停止轮询
+      if (!status.hasRunning && !workflowStatus.value.justTriggered) {
         stopPolling()
+      }
+
+      // 超时保护：如果触发超过 10 分钟还没检测到运行，停止轮询
+      if (workflowStatus.value.justTriggered && workflowStatus.value.triggerTime) {
+        const elapsed = Date.now() - workflowStatus.value.triggerTime
+        if (elapsed > 10 * 60 * 1000) {
+          console.warn('Workflow trigger timeout, stopping polling')
+          workflowStatus.value.justTriggered = false
+          workflowStatus.value.triggerTime = null
+          stopPolling()
+        }
       }
     }, interval)
   }
@@ -189,6 +279,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
       pollTimer = null
     }
     polling.value = false
+  }
+
+  // 设置图床仓库配置（用于完成后刷新）
+  function setImageRepoConfig(owner, repo, branch) {
+    pollConfig.imageOwner = owner
+    pollConfig.imageRepo = repo
+    pollConfig.branch = branch
   }
 
   // 增加会话上传计数
@@ -204,6 +301,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   // 清理
   function cleanup() {
     stopPolling()
+    clearDelayTimers()
   }
 
   return {
@@ -218,6 +316,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     statsData,
     // 计算属性
     canTrigger,
+    isRunning,
     statusText,
     // 方法
     refreshPendingInfo,
@@ -228,6 +327,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     rollbackLastRelease,
     startPolling,
     stopPolling,
+    setImageRepoConfig,
     addSessionUpload,
     resetSessionUpload,
     cleanup

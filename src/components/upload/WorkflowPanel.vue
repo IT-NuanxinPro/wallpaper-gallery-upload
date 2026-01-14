@@ -176,12 +176,12 @@
       <button
         v-if="isAdmin && pendingInfo.latestTag"
         class="workflow-panel__rollback-btn"
-        :disabled="rolling || loading"
+        :disabled="rolling || loading || isRunning"
         @click="handleRollback"
       >
         <el-icon v-if="rolling" class="is-loading"><Loading /></el-icon>
         <el-icon v-else><RefreshLeft /></el-icon>
-        <span>回滚 {{ pendingInfo.latestTag }}</span>
+        <span>撤销 {{ pendingInfo.latestTag }}</span>
       </button>
     </div>
   </GlassCard>
@@ -220,6 +220,7 @@ const pendingInfo = computed(() => workflowStore.pendingInfo)
 const workflowStatus = computed(() => workflowStore.workflowStatus)
 const lastReleaseStats = computed(() => workflowStore.lastReleaseStats)
 const isAdmin = computed(() => authStore.permissionLevel === 'admin')
+const isRunning = computed(() => workflowStore.isRunning)
 
 // 工作流仓库配置
 const WORKFLOW_OWNER = 'IT-NuanxinPro'
@@ -280,7 +281,7 @@ async function handleRollback() {
 
   try {
     await ElMessageBox.confirm(
-      `确定要回滚版本 ${tagName} 吗？\n\n这将删除该版本的 tag 和 release，但不会删除已生成的文件。`,
+      `确定要回滚版本 ${tagName} 吗？\n\n这将：\n• 删除该版本新增的壁纸文件\n• 更新时间戳和统计数据\n• 删除 tag 和 release\n\n注意：不会影响 Bing 每日同步的数据`,
       '回滚确认',
       {
         confirmButtonText: '确定回滚',
@@ -292,12 +293,15 @@ async function handleRollback() {
 
     rolling.value = true
     const { owner, repo } = configStore.config
-    const result = await workflowStore.rollbackLastRelease(owner, repo)
+    const result = await workflowStore.rollbackLastRelease(
+      owner,
+      repo,
+      WORKFLOW_OWNER,
+      WORKFLOW_REPO,
+      tagName
+    )
 
-    ElMessage.success(`已回滚版本 ${result.deletedTag}，当前最新版本: ${result.newLatestTag}`)
-
-    // 刷新数据
-    await refresh()
+    ElMessage.success(`回滚工作流已触发，正在处理 ${result.deletedTag}...`)
   } catch (error) {
     if (error !== 'cancel') {
       ElMessage.error('回滚失败: ' + (error.message || '未知错误'))
@@ -369,6 +373,10 @@ function formatDate(dateStr) {
 }
 
 onMounted(() => {
+  // 设置图床仓库配置，用于工作流完成后自动刷新数据
+  const { owner, repo, branch } = configStore.config
+  workflowStore.setImageRepoConfig(owner, repo, branch)
+
   refresh()
 })
 

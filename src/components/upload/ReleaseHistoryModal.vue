@@ -36,16 +36,20 @@
                 :key="index"
                 class="release-modal__chart-bar-wrap"
               >
-                <div
-                  class="release-modal__chart-bar"
-                  :style="{ height: item.height + '%' }"
-                  :title="`${item.tag}: +${item.total}`"
-                >
-                  <span v-if="item.total > 0" class="release-modal__chart-bar-value">
-                    {{ item.total }}
-                  </span>
+                <div class="release-modal__chart-bar-container">
+                  <div
+                    class="release-modal__chart-bar"
+                    :style="{ height: item.height + '%' }"
+                    :title="`${item.tag}: +${item.total}`"
+                  >
+                    <span class="release-modal__chart-bar-value">
+                      {{ item.total }}
+                    </span>
+                  </div>
                 </div>
-                <span class="release-modal__chart-bar-label">{{ item.label }}</span>
+                <div class="release-modal__chart-bar-label">
+                  <span class="release-modal__chart-bar-version">{{ item.label }}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -78,6 +82,9 @@
                   </span>
                   <span v-if="release.added.avatar > 0" class="release-modal__item-delta avatar">
                     👤 +{{ release.added.avatar }}
+                  </span>
+                  <span v-if="release.added.bing > 0" class="release-modal__item-delta bing">
+                    🌄 +{{ release.added.bing }}
                   </span>
                   <span v-if="getTotalAdded(release) === 0" class="release-modal__item-delta empty">
                     无变更
@@ -132,17 +139,29 @@ const chartData = computed(() => {
   const data = releases.value.slice(0, 10).reverse()
   const maxTotal = Math.max(...data.map(r => getTotalAdded(r)), 1)
 
-  return data.map(r => ({
-    tag: r.tag,
-    total: getTotalAdded(r),
-    height: (getTotalAdded(r) / maxTotal) * 100,
-    label: r.tag.replace('v1.1.', '')
-  }))
+  return data.map(r => {
+    // 格式化日期为 M/D
+    const date = new Date(r.date)
+    const dateStr = `${date.getMonth() + 1}/${date.getDate()}`
+
+    return {
+      tag: r.tag,
+      total: getTotalAdded(r),
+      height: (getTotalAdded(r) / maxTotal) * 100,
+      label: r.tag,
+      date: dateStr
+    }
+  })
 })
 
 function getTotalAdded(release) {
   if (!release?.added) return 0
-  return (release.added.desktop || 0) + (release.added.mobile || 0) + (release.added.avatar || 0)
+  return (
+    (release.added.desktop || 0) +
+    (release.added.mobile || 0) +
+    (release.added.avatar || 0) +
+    (release.added.bing || 0)
+  )
 }
 
 function openRelease(tag) {
@@ -273,6 +292,14 @@ function openRelease(tag) {
       height: 100%;
     }
 
+    &-bar-container {
+      flex: 1;
+      width: 100%;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+    }
+
     &-bar {
       width: 100%;
       max-width: 40px;
@@ -299,9 +326,17 @@ function openRelease(tag) {
     }
 
     &-bar-label {
-      font-size: 9px;
-      color: $gray-500;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
       margin-top: $spacing-1;
+      flex-shrink: 0;
+    }
+
+    &-bar-version {
+      font-size: 9px;
+      color: $gray-400;
+      font-weight: 500;
     }
   }
 
@@ -401,6 +436,11 @@ function openRelease(tag) {
       &.avatar {
         background: rgba($warning, 0.15);
         color: $warning;
+      }
+
+      &.bing {
+        background: rgba(#60a5fa, 0.15);
+        color: #60a5fa;
       }
 
       &.empty {

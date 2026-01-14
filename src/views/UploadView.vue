@@ -30,6 +30,7 @@
       <!-- 三栏布局 -->
       <div class="upload-view__content">
         <CategorySidebar
+          :key="treeKey"
           :series="series"
           :tree-data="treeData"
           :loading="loading"
@@ -38,6 +39,8 @@
           @select-series="selectSeries"
           @select-category="handleCategorySelect"
           @create="showModal = true"
+          @delete="handleDeleteCategory"
+          @refresh="handleRefreshCategories"
         />
 
         <!-- 中间列：统计条 + 上传面板 -->
@@ -112,7 +115,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import MainLayout from '@/components/MainLayout.vue'
 import HeaderStats from '@/components/upload/HeaderStats.vue'
 import CategorySidebar from '@/components/upload/CategorySidebar.vue'
@@ -125,6 +128,7 @@ import CreateCategoryModal from '@/components/upload/CreateCategoryModal.vue'
 import UploadProgressModal from '@/components/upload/UploadProgressModal.vue'
 import TargetSelectModal from '@/components/upload/TargetSelectModal.vue'
 import { githubService } from '@/services/github'
+import { gistStorage } from '@/services/gistStorage'
 import { useConfigStore } from '@/stores/config'
 import { useUploadStore } from '@/stores/upload'
 import { useAuthStore } from '@/stores/auth'
@@ -140,6 +144,7 @@ const { staggerIn } = useAnimation()
 const viewRef = ref(null)
 const series = ref('desktop')
 const treeData = ref([])
+const treeKey = ref(0) // 用于强制刷新树组件
 const loading = ref(false)
 const loadingStats = ref(false)
 const selectedL1 = ref('')
@@ -172,6 +177,12 @@ function selectSeries(value) {
   series.value = value
   uploadStore.setTarget(value, '', '')
   selectedL1.value = ''
+  loadRootCategories()
+}
+
+function handleRefreshCategories() {
+  categoryCache.clear()
+  treeKey.value++
   loadRootCategories()
 }
 
@@ -281,6 +292,22 @@ async function handleUpload() {
       workflowStore.addSessionUpload(ok)
     }
 
+    // 保存上传记录到 Gist
+    if (ok > 0 && gistStorage.isInitialized()) {
+      const successFiles = results.results
+        .filter(r => r.success)
+        .map(r => {
+          const file = uploadStore.files.find(f => f.id === r.id)
+          return {
+            fileName: file?.name || r.id,
+            series: file?.series || series.value,
+            category: file?.targetPath || '',
+            size: file?.size || 0
+          }
+        })
+      gistStorage.addUploadRecords(successFiles)
+    }
+
     ElMessage[fail ? 'warning' : 'success'](
       fail ? `上传完成：${ok} 成功，${fail} 失败` : `成功上传 ${ok} 个文件`
     )
@@ -339,6 +366,22 @@ async function handleRetry() {
       workflowStore.addSessionUpload(ok)
     }
 
+    // 保存上传记录到 Gist
+    if (ok > 0 && gistStorage.isInitialized()) {
+      const successFiles = results.results
+        .filter(r => r.success)
+        .map(r => {
+          const file = uploadStore.files.find(f => f.id === r.id)
+          return {
+            fileName: file?.name || r.id,
+            series: file?.series || series.value,
+            category: file?.targetPath || '',
+            size: file?.size || 0
+          }
+        })
+      gistStorage.addUploadRecords(successFiles)
+    }
+
     ElMessage[fail ? 'warning' : 'success'](
       fail ? `重试完成：${ok} 成功，${fail} 失败` : `重试成功，${ok} 个文件已上传`
     )
@@ -375,27 +418,145 @@ async function createCategory(form) {
     ElMessage.error('分类名称包含非法字符')
     return
   }
-  if (form.level === 'l2' && !selectedL1.value) {
-    ElMessage.error('请先选择一级分类')
-    return
-  }
 
   creating.value = true
   try {
     const { owner, repo, branch } = configStore.config
     let path = `wallpaper/${series.value}`
-    if (form.level === 'l2') path += `/${selectedL1.value}`
+
+    // 根据是否有父分类决定创建一级还是二级
+    if (form.level === 'l2' && selectedL1.value) {
+      path += `/${selectedL1.value}`
+    }
     path += `/${form.name}/.gitkeep`
 
     await githubService.createFile(owner, repo, path, '', `Create category: ${form.name}`, branch)
     ElMessage.success('分类创建成功')
     showModal.value = false
+
+    // 清除缓存
     categoryCache.clear()
-    loadRootCategories()
+
+    // 等待 GitHub API 同步（通常需要 1-2 秒）
+    await new Promise(resolve => setTimeout(resolve, 1500))
+
+    // 重新加载分类列表
+    await loadRootCategories()
   } catch (e) {
     ElMessage.error(e.message || '创建失败')
   } finally {
     creating.value = false
+  }
+}
+
+async function handleDeleteCategory({ data }) {
+  const { owner, repo, branch } = configStore.config
+
+  try {
+    // 先检查目录内容
+    let contents = []
+    let hasImages = false
+    let hasSubDirs = false
+
+    try {
+      contents = await githubService.getContents(owner, repo, data.path, branch)
+      // 确保 contents 是数组
+      if (!Array.isArray(contents)) {
+        contents = [contents]
+      }
+      hasImages = contents.some(
+        item => item.type === 'file' && /\.(jpg|jpeg|png|gif|webp)$/i.test(item.name)
+      )
+      hasSubDirs = contents.some(item => item.type === 'dir')
+    } catch (err) {
+      // 目录可能为空或不存在
+      if (err.status === 404 || err.type === 'NOT_FOUND') {
+        contents = []
+      } else {
+        throw err
+      }
+    }
+
+    // 构建确认消息
+    let confirmMsg = `确定要删除分类「${data.name}」吗？`
+    if (hasImages || hasSubDirs) {
+      confirmMsg = `分类「${data.name}」${hasSubDirs ? '包含子分类' : ''}${hasImages ? '包含图片' : ''}，删除后无法恢复，确定要删除吗？`
+    }
+
+    await ElMessageBox.confirm(confirmMsg, '删除确认', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger'
+    })
+
+    // 显示删除中提示
+    const loadingMsg = ElMessage({
+      message: '正在删除...',
+      type: 'info',
+      duration: 0
+    })
+
+    try {
+      // 递归删除目录下所有文件
+      await deleteDirectoryRecursive(owner, repo, data.path, branch)
+      loadingMsg.close()
+      ElMessage.success('分类删除成功')
+    } catch (deleteErr) {
+      loadingMsg.close()
+      throw deleteErr
+    }
+
+    // 清除缓存并刷新
+    categoryCache.clear()
+    treeKey.value++ // 强制刷新树组件
+    await loadRootCategories()
+
+    // 如果删除的是当前选中的分类，清空选择
+    if (uploadStore.targetPath.includes(data.path)) {
+      uploadStore.setTarget(series.value, '', '')
+      selectedL1.value = ''
+    }
+  } catch (e) {
+    if (e !== 'cancel') {
+      console.error('Delete category error:', e)
+      ElMessage.error(e.message || '删除失败')
+    }
+  }
+}
+
+async function deleteDirectoryRecursive(owner, repo, path, branch) {
+  let contents = []
+
+  try {
+    contents = await githubService.getContents(owner, repo, path, branch)
+    // 确保 contents 是数组
+    if (!Array.isArray(contents)) {
+      contents = [contents]
+    }
+  } catch (err) {
+    // 目录为空或不存在，无需删除
+    if (err.status === 404 || err.type === 'NOT_FOUND') {
+      return
+    }
+    throw err
+  }
+
+  for (const item of contents) {
+    if (item.type === 'dir') {
+      // 递归删除子目录
+      await deleteDirectoryRecursive(owner, repo, item.path, branch)
+    } else {
+      // 删除文件（包括 .gitkeep）
+      await githubService.deleteFile(
+        owner,
+        repo,
+        item.path,
+        item.sha,
+        `Delete: ${item.name}`,
+        branch
+      )
+    }
   }
 }
 
