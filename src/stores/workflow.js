@@ -18,13 +18,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     error: null
   })
 
-  // 上次发布统计
-  const lastReleaseStats = ref({
-    processedCount: 0,
-    latestTag: null,
-    previousTag: null
-  })
-
   // stats.json 统计数据
   const statsData = ref(null)
 
@@ -46,6 +39,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
   let delayTimers = []
   // 轮询配置
   let pollConfig = { owner: '', repo: '', imageOwner: '', imageRepo: '', branch: '' }
+  // 轮询开始时间
+  let pollStartTime = null
+  // 最大轮询时间（30分钟）
+  const MAX_POLL_TIME = 30 * 60 * 1000
 
   // 添加延迟定时器（便于统一清理）
   function addDelayTimer(callback, delay) {
@@ -109,18 +106,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  // 刷新上次发布统计
-  async function refreshLastReleaseStats(owner, repo) {
-    try {
-      const stats = await githubService.getLastReleaseStats(owner, repo)
-      lastReleaseStats.value = stats
-      return stats
-    } catch (error) {
-      console.error('Failed to refresh last release stats:', error)
-      return lastReleaseStats.value
-    }
-  }
-
   // 刷新 stats.json 数据
   async function refreshStatsData(owner, repo, branch = 'main') {
     try {
@@ -161,7 +146,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
           addDelayTimer(async () => {
             await Promise.all([
               refreshPendingInfo(pollConfig.imageOwner, pollConfig.imageRepo, pollConfig.branch),
-              refreshLastReleaseStats(pollConfig.imageOwner, pollConfig.imageRepo),
               refreshStatsData(pollConfig.imageOwner, pollConfig.imageRepo, pollConfig.branch)
             ])
           }, 2000)
@@ -243,27 +227,41 @@ export const useWorkflowStore = defineStore('workflow', () => {
   function startPolling(workflowOwner, workflowRepo, interval = 8000) {
     stopPolling()
     polling.value = true
+    pollStartTime = Date.now()
 
     // 保存配置用于完成后刷新
     pollConfig.owner = workflowOwner
     pollConfig.repo = workflowRepo
 
+    console.log('[WorkflowStore] 开始轮询工作流状态')
+
     // 立即检查一次
     refreshWorkflowStatus(workflowOwner, workflowRepo)
 
     pollTimer = setInterval(async () => {
+      // 检查是否超过最大轮询时间
+      const elapsed = Date.now() - pollStartTime
+      if (elapsed > MAX_POLL_TIME) {
+        console.warn('[WorkflowStore] 轮询超时（30分钟），自动停止')
+        workflowStatus.value.justTriggered = false
+        workflowStatus.value.triggerTime = null
+        stopPolling()
+        return
+      }
+
       const status = await refreshWorkflowStatus(workflowOwner, workflowRepo)
 
       // 如果没有运行中的工作流且不是刚触发状态，停止轮询
       if (!status.hasRunning && !workflowStatus.value.justTriggered) {
+        console.log('[WorkflowStore] 工作流已完成，停止轮询')
         stopPolling()
       }
 
       // 超时保护：如果触发超过 10 分钟还没检测到运行，停止轮询
       if (workflowStatus.value.justTriggered && workflowStatus.value.triggerTime) {
-        const elapsed = Date.now() - workflowStatus.value.triggerTime
-        if (elapsed > 10 * 60 * 1000) {
-          console.warn('Workflow trigger timeout, stopping polling')
+        const triggerElapsed = Date.now() - workflowStatus.value.triggerTime
+        if (triggerElapsed > 10 * 60 * 1000) {
+          console.warn('[WorkflowStore] 工作流触发超时（10分钟），停止轮询')
           workflowStatus.value.justTriggered = false
           workflowStatus.value.triggerTime = null
           stopPolling()
@@ -277,8 +275,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     if (pollTimer) {
       clearInterval(pollTimer)
       pollTimer = null
+      console.log('[WorkflowStore] 停止轮询')
     }
     polling.value = false
+    pollStartTime = null
   }
 
   // 设置图床仓库配置（用于完成后刷新）
@@ -298,10 +298,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
     sessionUploadCount.value = 0
   }
 
-  // 清理
+  // 清理所有资源
   function cleanup() {
+    console.log('[WorkflowStore] 清理资源')
     stopPolling()
     clearDelayTimers()
+    // 重置状态
+    workflowStatus.value = {
+      hasRunning: false,
+      runningWorkflow: null,
+      latestRun: null,
+      justTriggered: false,
+      triggerTime: null
+    }
+    pollStartTime = null
   }
 
   return {
@@ -312,7 +322,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     pendingInfo,
     workflowStatus,
     sessionUploadCount,
-    lastReleaseStats,
     statsData,
     // 计算属性
     canTrigger,
@@ -320,7 +329,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     statusText,
     // 方法
     refreshPendingInfo,
-    refreshLastReleaseStats,
     refreshStatsData,
     refreshWorkflowStatus,
     triggerWorkflow,

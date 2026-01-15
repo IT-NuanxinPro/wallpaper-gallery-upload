@@ -53,14 +53,6 @@
           </span>
         </div>
 
-        <!-- 上次处理统计 -->
-        <div v-if="lastReleaseStats.processedCount > 0" class="workflow-panel__stat">
-          <span class="workflow-panel__stat-label">上次处理</span>
-          <span class="workflow-panel__stat-value workflow-panel__stat-value--success">
-            {{ lastReleaseStats.processedCount }} 张
-          </span>
-        </div>
-
         <!-- 工作流状态 -->
         <div v-if="workflowStatus.latestRun" class="workflow-panel__stat">
           <span class="workflow-panel__stat-label">上次运行</span>
@@ -218,7 +210,6 @@ const loading = computed(() => workflowStore.loading)
 const triggering = computed(() => workflowStore.triggering)
 const pendingInfo = computed(() => workflowStore.pendingInfo)
 const workflowStatus = computed(() => workflowStore.workflowStatus)
-const lastReleaseStats = computed(() => workflowStore.lastReleaseStats)
 const isAdmin = computed(() => authStore.permissionLevel === 'admin')
 const isRunning = computed(() => workflowStore.isRunning)
 
@@ -231,7 +222,6 @@ async function refresh() {
   try {
     await Promise.all([
       workflowStore.refreshPendingInfo(owner, repo, branch),
-      workflowStore.refreshLastReleaseStats(owner, repo),
       workflowStore.refreshStatsData(owner, repo, branch),
       workflowStore.refreshWorkflowStatus(WORKFLOW_OWNER, WORKFLOW_REPO)
     ])

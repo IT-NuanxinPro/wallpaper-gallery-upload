@@ -3,6 +3,9 @@ import { ref, computed } from 'vue'
 import { githubService } from '@/services/github'
 import { useConfigStore } from './config'
 import { useHistoryStore } from './history'
+import { previewManager } from '@/utils/previewManager'
+import { hashWorker } from '@/utils/hashWorker'
+import { imageCompressor } from '@/utils/imageCompressor'
 
 // 允许的文件类型
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp']
@@ -72,25 +75,58 @@ export const useUploadStore = defineStore('upload', () => {
     return { valid: true }
   }
 
-  // 创建预览 URL
-  function createPreview(file) {
-    return URL.createObjectURL(file)
+  // 创建预览 URL（使用PreviewManager管理）
+  function createPreview(file, fileId) {
+    return previewManager.createPreview(fileId, file)
   }
 
-  // 添加文件
-  function addFiles(newFiles) {
+  // ✅ P2优化：添加文件时自动压缩大图片
+  async function addFiles(newFiles) {
     const validFiles = []
 
     for (const file of newFiles) {
       const validation = validateFile(file)
 
       if (validation.valid) {
+        const id = generateId()
+
+        // 尝试压缩图片（仅对大于5MB的文件进行压缩）
+        let processedFile = file
+        let compressed = false
+        let originalSize = file.size
+
+        if (file.size > 5 * 1024 * 1024) {
+          try {
+            const result = await imageCompressor.compress(file, {
+              maxWidth: 3840,
+              maxHeight: 2160,
+              quality: 0.9,
+              maxSizeMB: 5
+            })
+
+            if (result.compressed) {
+              processedFile = result.file
+              compressed = true
+              console.log(
+                `图片已压缩: ${file.name}`,
+                `原始: ${(originalSize / 1024 / 1024).toFixed(2)}MB`,
+                `压缩后: ${(result.compressedSize / 1024 / 1024).toFixed(2)}MB`,
+                `压缩率: ${result.ratio.toFixed(2)}x`
+              )
+            }
+          } catch (error) {
+            console.warn(`图片压缩失败，使用原图: ${file.name}`, error)
+          }
+        }
+
         validFiles.push({
-          id: generateId(),
-          file,
+          id,
+          file: processedFile,
           name: file.name,
-          size: file.size,
-          preview: createPreview(file),
+          size: processedFile.size,
+          originalSize,
+          compressed,
+          preview: createPreview(processedFile, id),
           status: 'pending',
           progress: 0,
           error: null,
@@ -144,39 +180,34 @@ export const useUploadStore = defineStore('upload', () => {
   function removeFile(id) {
     const index = files.value.findIndex(f => f.id === id)
     if (index > -1) {
-      // 释放预览 URL
-      URL.revokeObjectURL(files.value[index].preview)
+      // 释放预览 URL（使用PreviewManager）
+      previewManager.revokePreview(id)
       files.value.splice(index, 1)
     }
   }
 
   // 批量移除文件
   function removeFiles(ids) {
-    ids.forEach(id => {
-      const index = files.value.findIndex(f => f.id === id)
-      if (index > -1) {
-        URL.revokeObjectURL(files.value[index].preview)
-        files.value.splice(index, 1)
-      }
-    })
+    // 批量释放预览URL
+    previewManager.revokePreviews(ids)
+    // 从数组中移除
+    files.value = files.value.filter(f => !ids.includes(f.id))
   }
 
   // 清空所有文件
   function clearFiles() {
-    files.value.forEach(f => URL.revokeObjectURL(f.preview))
+    // 释放所有预览URL
+    previewManager.revokeAll()
     files.value = []
   }
 
   // 清理成功上传的文件（释放内存）
   function clearSuccessFiles() {
     const successIds = files.value.filter(f => f.status === 'success').map(f => f.id)
-    successIds.forEach(id => {
-      const index = files.value.findIndex(f => f.id === id)
-      if (index > -1) {
-        URL.revokeObjectURL(files.value[index].preview)
-        files.value.splice(index, 1)
-      }
-    })
+    // 批量释放预览URL
+    previewManager.revokePreviews(successIds)
+    // 从数组中移除
+    files.value = files.value.filter(f => f.status !== 'success')
     return successIds.length
   }
 
@@ -207,22 +238,41 @@ export const useUploadStore = defineStore('upload', () => {
   }
 
   // 计算文件内容 Hash（用于检测内容重复）
+  // ✅ P1优化：使用Web Worker在后台线程计算，避免阻塞主线程
   async function computeFileHash(file) {
-    const buffer = await file.arrayBuffer()
-    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
-    const hashArray = Array.from(new Uint8Array(hashBuffer))
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+    try {
+      return await hashWorker.computeHash(file)
+    } catch (error) {
+      console.error('Hash计算失败，回退到主线程:', error)
+      // 回退方案：主线程计算
+      const buffer = await file.arrayBuffer()
+      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
+      const hashArray = Array.from(new Uint8Array(hashBuffer))
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+    }
   }
 
+  // ✅ P1优化：localStorage批量操作和内存缓存
   // 检查本地上传记录（避免同一会话重复上传）
   const HASH_STORAGE_KEY = 'uploaded_hashes'
   const HASH_MAX_COUNT = 500 // 最多保留 500 条
   const HASH_EXPIRE_DAYS = 30 // 30 天后过期
 
+  // 内存缓存，减少localStorage读取
+  let hashCache = null
+  let hashCacheDirty = false
+  let saveTimer = null
+
   function getUploadedHashes() {
+    // 使用内存缓存
+    if (hashCache) return hashCache
+
     try {
       const stored = localStorage.getItem(HASH_STORAGE_KEY)
-      if (!stored) return {}
+      if (!stored) {
+        hashCache = {}
+        return hashCache
+      }
 
       const hashes = JSON.parse(stored)
       const now = Date.now()
@@ -236,30 +286,40 @@ export const useUploadStore = defineStore('upload', () => {
         }
       }
 
-      // 如果有过期记录被清理，更新存储
-      if (Object.keys(valid).length < Object.keys(hashes).length) {
-        localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(valid))
+      hashCache = valid
+      return hashCache
+    } catch {
+      hashCache = {}
+      return hashCache
+    }
+  }
+
+  function saveHashesToStorage() {
+    if (!hashCache || !hashCacheDirty) return
+
+    try {
+      // 限制数量
+      const entries = Object.entries(hashCache)
+      if (entries.length > HASH_MAX_COUNT) {
+        entries.sort((a, b) => b[1].time - a[1].time)
+        hashCache = Object.fromEntries(entries.slice(0, HASH_MAX_COUNT))
       }
 
-      return valid
-    } catch {
-      return {}
+      localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(hashCache))
+      hashCacheDirty = false
+    } catch (error) {
+      console.error('保存哈希记录失败:', error)
     }
   }
 
   function addUploadedHash(hash, filename, path) {
     const hashes = getUploadedHashes()
     hashes[hash] = { filename, path, time: Date.now() }
+    hashCacheDirty = true
 
-    // 超过上限时，删除最旧的记录
-    const entries = Object.entries(hashes)
-    if (entries.length > HASH_MAX_COUNT) {
-      entries.sort((a, b) => b[1].time - a[1].time)
-      const trimmed = Object.fromEntries(entries.slice(0, HASH_MAX_COUNT))
-      localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(trimmed))
-    } else {
-      localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(hashes))
-    }
+    // 延迟保存，避免频繁写入localStorage
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(saveHashesToStorage, 1000)
   }
 
   function isHashUploaded(hash) {
@@ -269,6 +329,9 @@ export const useUploadStore = defineStore('upload', () => {
 
   // 清除上传记录（手动清理）
   function clearUploadedHashes() {
+    hashCache = {}
+    hashCacheDirty = false
+    if (saveTimer) clearTimeout(saveTimer)
     localStorage.removeItem(HASH_STORAGE_KEY)
   }
 
@@ -448,6 +511,22 @@ export const useUploadStore = defineStore('upload', () => {
     categoryL2.value = l2
   }
 
+  // ✅ P1优化：添加清理方法，释放所有资源
+  function cleanup() {
+    // 释放所有预览URL
+    previewManager.revokeAll()
+    // 终止Hash Worker
+    hashWorker.terminate()
+    // 保存哈希缓存到localStorage
+    saveHashesToStorage()
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+    }
+    // 清空文件列表
+    files.value = []
+  }
+
   return {
     // 状态
     files,
@@ -483,7 +562,8 @@ export const useUploadStore = defineStore('upload', () => {
     checkDuplicates,
     computeFileHash,
     isHashUploaded,
-    clearUploadedHashes
+    clearUploadedHashes,
+    cleanup
   }
 })
 

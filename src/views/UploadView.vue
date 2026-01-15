@@ -114,7 +114,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MainLayout from '@/components/MainLayout.vue'
 import HeaderStats from '@/components/upload/HeaderStats.vue'
@@ -128,12 +128,13 @@ import CreateCategoryModal from '@/components/upload/CreateCategoryModal.vue'
 import UploadProgressModal from '@/components/upload/UploadProgressModal.vue'
 import TargetSelectModal from '@/components/upload/TargetSelectModal.vue'
 import { githubService } from '@/services/github'
-import { gistStorage } from '@/services/gistStorage'
+import { localStorageService } from '@/services/localStorage'
 import { useConfigStore } from '@/stores/config'
 import { useUploadStore } from '@/stores/upload'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useAnimation } from '@/composables/useAnimation'
+import { debounce } from '@/utils/debounce'
 
 const configStore = useConfigStore()
 const uploadStore = useUploadStore()
@@ -292,8 +293,8 @@ async function handleUpload() {
       workflowStore.addSessionUpload(ok)
     }
 
-    // 保存上传记录到 Gist
-    if (ok > 0 && gistStorage.isInitialized()) {
+    // 保存上传记录到本地存储
+    if (ok > 0 && localStorageService.isInitialized()) {
       const successFiles = results.results
         .filter(r => r.success)
         .map(r => {
@@ -305,7 +306,7 @@ async function handleUpload() {
             size: file?.size || 0
           }
         })
-      gistStorage.addUploadRecords(successFiles)
+      localStorageService.addUploadRecords(successFiles)
     }
 
     ElMessage[fail ? 'warning' : 'success'](
@@ -366,8 +367,8 @@ async function handleRetry() {
       workflowStore.addSessionUpload(ok)
     }
 
-    // 保存上传记录到 Gist
-    if (ok > 0 && gistStorage.isInitialized()) {
+    // 保存上传记录到本地存储
+    if (ok > 0 && localStorageService.isInitialized()) {
       const successFiles = results.results
         .filter(r => r.success)
         .map(r => {
@@ -379,7 +380,7 @@ async function handleRetry() {
             size: file?.size || 0
           }
         })
-      gistStorage.addUploadRecords(successFiles)
+      localStorageService.addUploadRecords(successFiles)
     }
 
     ElMessage[fail ? 'warning' : 'success'](
@@ -560,7 +561,8 @@ async function deleteDirectoryRecursive(owner, repo, path, branch) {
   }
 }
 
-async function refreshStats() {
+// 原始刷新统计函数
+async function _refreshStats() {
   loadingStats.value = true
   try {
     const { owner, repo, branch } = configStore.config
@@ -580,11 +582,28 @@ async function refreshStats() {
   }
 }
 
+// 防抖版本的刷新统计函数（2秒防抖）
+const refreshStats = debounce(_refreshStats, 2000)
+
 onMounted(() => {
   loadRootCategories()
   refreshStats()
   const els = viewRef.value?.querySelectorAll('.upload-view__content > *')
   if (els?.length) staggerIn(els, { duration: 0.5, stagger: 0.1, y: 20 })
+})
+
+// 组件卸载时清理资源
+onUnmounted(() => {
+  console.log('[UploadView] 组件卸载，清理资源')
+
+  // 清理工作流轮询和定时器
+  workflowStore.cleanup()
+
+  // 清理上传store中的预览URL和Worker
+  uploadStore.cleanup()
+
+  // 清理分类缓存
+  categoryCache.clear()
 })
 
 watch(series, () => {

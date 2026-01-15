@@ -329,39 +329,6 @@ class GitHubService {
   }
 
   /**
-   * 获取上次发布的处理统计（上次 tag 到上上次 tag 之间的变化）
-   */
-  async getLastReleaseStats(owner, repo) {
-    try {
-      const tags = await this.getTags(owner, repo, 3)
-      if (tags.length < 2) {
-        return { processedCount: 0, latestTag: tags[0]?.name || null, previousTag: null }
-      }
-
-      const latestTag = tags[0].name
-      const previousTag = tags[1].name
-
-      const comparison = await this.compareCommits(owner, repo, previousTag, latestTag)
-
-      // 统计处理的图片数（preview 目录下的 webp 文件）
-      const processedFiles = (comparison.files || []).filter(
-        f =>
-          f.status === 'added' && f.filename.startsWith('preview/') && f.filename.endsWith('.webp')
-      )
-
-      return {
-        processedCount: processedFiles.length,
-        latestTag,
-        previousTag,
-        totalFiles: comparison.files?.length || 0
-      }
-    } catch (error) {
-      console.error('Failed to get last release stats:', error)
-      return { processedCount: 0, latestTag: null, previousTag: null }
-    }
-  }
-
-  /**
    * 获取 stats.json 统计文件
    */
   async getStats(owner, repo, branch = 'main') {

@@ -105,67 +105,73 @@
             </button>
           </Transition>
         </div>
-        <TransitionGroup name="grid" tag="div" class="upload-panel__grid">
-          <div
-            v-for="file in files"
-            :key="file.id"
-            class="upload-panel__item"
-            :class="[
-              `upload-panel__item--${file.status}`,
-              { 'upload-panel__item--selected': selectedId === file.id },
-              { 'upload-panel__item--checked': selectedIds.includes(file.id) }
-            ]"
-            @click="$emit('select', file)"
-          >
-            <!-- 复选框 -->
-            <el-checkbox
-              v-if="(file.status === 'pending' || file.status === 'error') && !uploading"
-              v-model="selectedIds"
-              :value="file.id"
-              class="upload-panel__item-checkbox"
-              @click.stop
-            />
-            <img :src="file.preview" class="upload-panel__item-img" draggable="false" />
-            <div v-if="file.status === 'uploading'" class="upload-panel__item-overlay">
-              <el-progress
-                type="circle"
-                :percentage="file.progress"
-                :width="36"
-                :stroke-width="3"
-              />
-            </div>
-            <span
-              v-else-if="file.status === 'success'"
-              class="upload-panel__item-badge upload-panel__item-badge--success"
-              >✓</span
-            >
-            <span
-              v-else-if="file.status === 'error'"
-              class="upload-panel__item-badge upload-panel__item-badge--error"
-              >!</span
-            >
-            <button
-              v-if="file.status === 'pending' || file.status === 'error'"
-              class="upload-panel__item-remove"
-              @click.stop="$emit('remove', file.id)"
-            >
-              ×
-            </button>
-            <!-- 目标路径标签 -->
+
+        <!-- 图片网格 -->
+        <div class="upload-panel__grid">
+          <TransitionGroup name="grid">
             <div
-              v-if="file.status === 'pending' && file.targetPath"
-              class="upload-panel__item-path"
-              :class="`upload-panel__item-path--${file.targetSeries}`"
-              :title="file.targetPath"
-              @click.stop="$emit('change-target', file)"
+              v-for="file in files"
+              :key="file.id"
+              class="upload-panel__item"
+              :class="[
+                `upload-panel__item--${file.status}`,
+                { 'upload-panel__item--selected': selectedId === file.id },
+                { 'upload-panel__item--checked': selectedIds.includes(file.id) }
+              ]"
+              @click="$emit('select', file)"
             >
-              <span class="upload-panel__item-path-icon">{{
-                getSeriesIcon(file.targetSeries)
-              }}</span>
-              <span class="upload-panel__item-path-text">{{ getShortPath(file.targetPath) }}</span>
+              <!-- 复选框 -->
+              <el-checkbox
+                v-if="(file.status === 'pending' || file.status === 'error') && !uploading"
+                v-model="selectedIds"
+                :value="file.id"
+                class="upload-panel__item-checkbox"
+                @click.stop
+              />
+              <img :src="file.preview" class="upload-panel__item-img" draggable="false" />
+              <div v-if="file.status === 'uploading'" class="upload-panel__item-overlay">
+                <el-progress
+                  type="circle"
+                  :percentage="file.progress"
+                  :width="36"
+                  :stroke-width="3"
+                />
+              </div>
+              <span
+                v-else-if="file.status === 'success'"
+                class="upload-panel__item-badge upload-panel__item-badge--success"
+                >✓</span
+              >
+              <span
+                v-else-if="file.status === 'error'"
+                class="upload-panel__item-badge upload-panel__item-badge--error"
+                >!</span
+              >
+              <button
+                v-if="file.status === 'pending' || file.status === 'error'"
+                class="upload-panel__item-remove"
+                @click.stop="$emit('remove', file.id)"
+              >
+                ×
+              </button>
+              <!-- 目标路径标签 -->
+              <div
+                v-if="file.status === 'pending' && file.targetPath"
+                class="upload-panel__item-path"
+                :class="`upload-panel__item-path--${file.targetSeries}`"
+                :title="file.targetPath"
+                @click.stop="$emit('change-target', file)"
+              >
+                <span class="upload-panel__item-path-icon">{{
+                  getSeriesIcon(file.targetSeries)
+                }}</span>
+                <span class="upload-panel__item-path-text">{{
+                  getShortPath(file.targetPath)
+                }}</span>
+              </div>
             </div>
-          </div>
-        </TransitionGroup>
+          </TransitionGroup>
+        </div>
       </div>
 
       <!-- 空状态 -->
@@ -644,8 +650,21 @@ function getSeriesIcon(series) {
 
   &__files {
     flex: 1;
-    overflow-y: auto;
     margin-top: $spacing-3;
+    overflow: hidden;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: $spacing-3;
+    overflow-y: auto;
+    padding-right: $spacing-1;
+    align-content: start;
 
     &::-webkit-scrollbar {
       width: 4px;
@@ -654,6 +673,14 @@ function getSeriesIcon(series) {
     &::-webkit-scrollbar-thumb {
       background: rgba(255, 255, 255, 0.15);
       border-radius: 2px;
+
+      &:hover {
+        background: rgba(255, 255, 255, 0.25);
+      }
+    }
+
+    &::-webkit-scrollbar-track {
+      background: transparent;
     }
   }
 
@@ -691,13 +718,6 @@ function getSeriesIcon(series) {
         font-size: 12px;
       }
     }
-  }
-
-  &__grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-    gap: $spacing-3;
-    align-content: start;
   }
 
   &__item {
