@@ -104,10 +104,19 @@
         :visible="showTargetModal"
         :file="targetEditFile"
         :current-series="series"
-        :tree-data="treeData"
-        :load-node="loadNode"
         @close="showTargetModal = false"
         @confirm="handleTargetConfirm"
+      />
+
+      <!-- 删除分类确认弹窗 -->
+      <DeleteCategoryModal
+        :visible="showDeleteModal"
+        :category-name="deleteTarget.data?.name || ''"
+        :has-sub-dirs="deleteTarget.hasSubDirs"
+        :has-images="deleteTarget.hasImages"
+        :deleting="deleting"
+        @close="showDeleteModal = false"
+        @confirm="confirmDeleteCategory"
       />
     </div>
   </MainLayout>
@@ -115,7 +124,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import MainLayout from '@/components/MainLayout.vue'
 import HeaderStats from '@/components/upload/HeaderStats.vue'
 import CategorySidebar from '@/components/upload/CategorySidebar.vue'
@@ -125,6 +134,7 @@ import WorkflowPanel from '@/components/upload/WorkflowPanel.vue'
 import WallpaperStatsBar from '@/components/upload/WallpaperStatsBar.vue'
 import ReleaseHistoryModal from '@/components/upload/ReleaseHistoryModal.vue'
 import CreateCategoryModal from '@/components/upload/CreateCategoryModal.vue'
+import DeleteCategoryModal from '@/components/upload/DeleteCategoryModal.vue'
 import UploadProgressModal from '@/components/upload/UploadProgressModal.vue'
 import TargetSelectModal from '@/components/upload/TargetSelectModal.vue'
 import { githubService } from '@/services/github'
@@ -154,8 +164,11 @@ const showModal = ref(false)
 const showProgressModal = ref(false)
 const showHistoryModal = ref(false)
 const showTargetModal = ref(false)
+const showDeleteModal = ref(false)
 const targetEditFile = ref(null)
 const creating = ref(false)
+const deleting = ref(false)
+const deleteTarget = reactive({ data: null, hasSubDirs: false, hasImages: false })
 
 const stats = reactive({ desktop: 0, mobile: 0, avatar: 0, total: 0 })
 
@@ -190,6 +203,7 @@ function handleRefreshCategories() {
 async function loadRootCategories() {
   const cacheKey = `${series.value}-root`
   const cached = getCache(cacheKey)
+  console.log('[loadRootCategories] cacheKey:', cacheKey, 'cached:', !!cached)
   if (cached) {
     treeData.value = cached
     return
@@ -198,6 +212,7 @@ async function loadRootCategories() {
   loading.value = true
   try {
     const { owner, repo, branch } = configStore.config
+    console.log('[loadRootCategories] Fetching from GitHub...')
     const contents = await githubService.getContents(
       owner,
       repo,
@@ -213,9 +228,14 @@ async function loadRootCategories() {
         children: [],
         loaded: false
       }))
+    console.log(
+      '[loadRootCategories] Got categories:',
+      categories.map(c => c.name)
+    )
     treeData.value = categories
     setCache(cacheKey, categories)
-  } catch {
+  } catch (err) {
+    console.error('[loadRootCategories] Error:', err)
     treeData.value = []
   } finally {
     loading.value = false
@@ -435,14 +455,28 @@ async function createCategory(form) {
     ElMessage.success('分类创建成功')
     showModal.value = false
 
+    console.log('[createCategory] Clearing cache and refreshing...')
+
     // 清除缓存
     categoryCache.clear()
 
-    // 等待 GitHub API 同步（通常需要 1-2 秒）
-    await new Promise(resolve => setTimeout(resolve, 1500))
+    // 先显示 loading 状态，让用户感知到正在刷新
+    loading.value = true
+
+    // 等待 GitHub API 同步
+    await new Promise(resolve => setTimeout(resolve, 1200))
 
     // 重新加载分类列表
+    console.log('[createCategory] Calling loadRootCategories...')
     await loadRootCategories()
+    console.log(
+      '[createCategory] Done, treeData:',
+      treeData.value.map(c => c.name)
+    )
+
+    // 强制刷新树组件（数据加载完成后再刷新，确保新数据被渲染）
+    treeKey.value++
+    console.log('[createCategory] treeKey incremented to:', treeKey.value)
   } catch (e) {
     ElMessage.error(e.message || '创建失败')
   } finally {
@@ -461,7 +495,6 @@ async function handleDeleteCategory({ data }) {
 
     try {
       contents = await githubService.getContents(owner, repo, data.path, branch)
-      // 确保 contents 是数组
       if (!Array.isArray(contents)) {
         contents = [contents]
       }
@@ -470,7 +503,6 @@ async function handleDeleteCategory({ data }) {
       )
       hasSubDirs = contents.some(item => item.type === 'dir')
     } catch (err) {
-      // 目录可能为空或不存在
       if (err.status === 404 || err.type === 'NOT_FOUND') {
         contents = []
       } else {
@@ -478,40 +510,44 @@ async function handleDeleteCategory({ data }) {
       }
     }
 
-    // 构建确认消息
-    let confirmMsg = `确定要删除分类「${data.name}」吗？`
-    if (hasImages || hasSubDirs) {
-      confirmMsg = `分类「${data.name}」${hasSubDirs ? '包含子分类' : ''}${hasImages ? '包含图片' : ''}，删除后无法恢复，确定要删除吗？`
-    }
+    // 设置删除目标并打开弹窗
+    deleteTarget.data = data
+    deleteTarget.hasSubDirs = hasSubDirs
+    deleteTarget.hasImages = hasImages
+    showDeleteModal.value = true
+  } catch (e) {
+    console.error('Check category error:', e)
+    ElMessage.error(e.message || '检查分类失败')
+  }
+}
 
-    await ElMessageBox.confirm(confirmMsg, '删除确认', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-      confirmButtonClass: 'el-button--danger'
-    })
+async function confirmDeleteCategory() {
+  if (!deleteTarget.data) return
 
-    // 显示删除中提示
-    const loadingMsg = ElMessage({
-      message: '正在删除...',
-      type: 'info',
-      duration: 0
-    })
+  const { owner, repo, branch } = configStore.config
+  const data = deleteTarget.data
 
-    try {
-      // 递归删除目录下所有文件
-      await deleteDirectoryRecursive(owner, repo, data.path, branch)
-      loadingMsg.close()
-      ElMessage.success('分类删除成功')
-    } catch (deleteErr) {
-      loadingMsg.close()
-      throw deleteErr
-    }
+  deleting.value = true
+  try {
+    // 递归删除目录下所有文件
+    await deleteDirectoryRecursive(owner, repo, data.path, branch)
+
+    // 关闭弹窗
+    showDeleteModal.value = false
+    ElMessage.success('分类删除成功')
 
     // 清除缓存并刷新
     categoryCache.clear()
-    treeKey.value++ // 强制刷新树组件
+    loading.value = true
+
+    // 等待 GitHub API 同步
+    await new Promise(resolve => setTimeout(resolve, 1200))
+
+    // 加载数据
     await loadRootCategories()
+
+    // 强制刷新树组件
+    treeKey.value++
 
     // 如果删除的是当前选中的分类，清空选择
     if (uploadStore.targetPath.includes(data.path)) {
@@ -519,10 +555,10 @@ async function handleDeleteCategory({ data }) {
       selectedL1.value = ''
     }
   } catch (e) {
-    if (e !== 'cancel') {
-      console.error('Delete category error:', e)
-      ElMessage.error(e.message || '删除失败')
-    }
+    console.error('Delete category error:', e)
+    ElMessage.error(e.message || '删除失败')
+  } finally {
+    deleting.value = false
   }
 }
 

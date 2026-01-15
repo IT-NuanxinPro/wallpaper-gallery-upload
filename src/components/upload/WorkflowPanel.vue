@@ -54,7 +54,7 @@
         </div>
 
         <!-- 工作流状态 -->
-        <div v-if="workflowStatus.latestRun" class="workflow-panel__stat">
+        <div v-if="workflowStatus.latestRun && !isRunning" class="workflow-panel__stat">
           <span class="workflow-panel__stat-label">上次运行</span>
           <span class="workflow-panel__stat-value">
             <el-tag
@@ -70,7 +70,7 @@
 
         <!-- 工作流失败详情 -->
         <div
-          v-if="workflowStatus.latestRun?.conclusion === 'failure'"
+          v-if="workflowStatus.latestRun?.conclusion === 'failure' && !isRunning"
           class="workflow-panel__failure"
         >
           <el-icon><CircleClose /></el-icon>
@@ -80,10 +80,44 @@
           </a>
         </div>
 
-        <!-- 运行中状态 -->
-        <div v-if="workflowStatus.hasRunning" class="workflow-panel__running">
-          <el-icon class="is-loading"><Loading /></el-icon>
-          <span>{{ workflowStore.statusText }}</span>
+        <!-- 运行中状态（详细显示） -->
+        <div v-if="isRunning" class="workflow-panel__progress">
+          <div class="workflow-panel__progress-header">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            <span>{{ getProgressTitle() }}</span>
+          </div>
+
+          <!-- 进度步骤 -->
+          <div class="workflow-panel__steps">
+            <div
+              v-for="(step, index) in progressSteps"
+              :key="step.key"
+              class="workflow-panel__step"
+              :class="{
+                'workflow-panel__step--active': step.status === 'active',
+                'workflow-panel__step--done': step.status === 'done',
+                'workflow-panel__step--pending': step.status === 'pending'
+              }"
+            >
+              <div class="workflow-panel__step-indicator">
+                <el-icon v-if="step.status === 'active'" class="is-loading"><Loading /></el-icon>
+                <el-icon v-else-if="step.status === 'done'"><CircleCheck /></el-icon>
+                <span v-else>{{ index + 1 }}</span>
+              </div>
+              <span class="workflow-panel__step-text">{{ step.label }}</span>
+            </div>
+          </div>
+
+          <!-- 查看详情链接 -->
+          <a
+            v-if="getWorkflowRunUrl()"
+            :href="getWorkflowRunUrl()"
+            target="_blank"
+            class="workflow-panel__progress-link"
+          >
+            <el-icon><Link /></el-icon>
+            查看 GitHub Actions
+          </a>
         </div>
 
         <!-- 提示信息 -->
@@ -175,6 +209,18 @@
         <el-icon v-else><RefreshLeft /></el-icon>
         <span>撤销 {{ pendingInfo.latestTag }}</span>
       </button>
+
+      <!-- 重新部署前端按钮（可写用户可见） -->
+      <button
+        v-if="canUpload"
+        class="workflow-panel__deploy-btn"
+        :disabled="deploying || loading"
+        @click="handleDeployFrontend"
+      >
+        <el-icon v-if="deploying" class="is-loading"><Loading /></el-icon>
+        <el-icon v-else><Upload /></el-icon>
+        <span>{{ deploying ? '部署中...' : '重新部署前端' }}</span>
+      </button>
     </div>
   </GlassCard>
 </template>
@@ -191,7 +237,10 @@ import {
   ArrowUp,
   ArrowDown,
   RefreshLeft,
-  CircleClose
+  CircleClose,
+  CircleCheck,
+  Link,
+  Upload
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import GlassCard from '@/components/GlassCard.vue'
@@ -205,17 +254,96 @@ const authStore = useAuthStore()
 
 const showFiles = ref(false)
 const rolling = ref(false)
+const deploying = ref(false)
 
 const loading = computed(() => workflowStore.loading)
 const triggering = computed(() => workflowStore.triggering)
 const pendingInfo = computed(() => workflowStore.pendingInfo)
 const workflowStatus = computed(() => workflowStore.workflowStatus)
 const isAdmin = computed(() => authStore.permissionLevel === 'admin')
+const canUpload = computed(() => authStore.canUpload)
 const isRunning = computed(() => workflowStore.isRunning)
+
+// 进度步骤
+const progressSteps = computed(() => {
+  const status = workflowStatus.value
+  const run = status.runningWorkflow || status.latestRun
+
+  // 定义步骤
+  const steps = [
+    { key: 'trigger', label: '触发工作流' },
+    { key: 'queue', label: '排队等待' },
+    { key: 'process', label: '处理图片' },
+    { key: 'release', label: '发布版本' }
+  ]
+
+  // 根据状态设置每个步骤的状态
+  if (status.justTriggered && !status.hasRunning) {
+    // 刚触发，等待启动
+    return steps.map((step, i) => ({
+      ...step,
+      status: i === 0 ? 'active' : 'pending'
+    }))
+  }
+
+  if (run?.status === 'queued') {
+    // 排队中
+    return steps.map((step, i) => ({
+      ...step,
+      status: i === 0 ? 'done' : i === 1 ? 'active' : 'pending'
+    }))
+  }
+
+  if (run?.status === 'in_progress') {
+    // 运行中 - 根据运行时间估算进度
+    const startTime = run.run_started_at ? new Date(run.run_started_at).getTime() : Date.now()
+    const elapsed = Date.now() - startTime
+
+    // 假设：0-30秒处理图片，30秒后发布版本
+    if (elapsed < 30000) {
+      return steps.map((step, i) => ({
+        ...step,
+        status: i <= 1 ? 'done' : i === 2 ? 'active' : 'pending'
+      }))
+    } else {
+      return steps.map((step, i) => ({
+        ...step,
+        status: i <= 2 ? 'done' : 'active'
+      }))
+    }
+  }
+
+  // 默认：第一步激活
+  return steps.map((step, i) => ({
+    ...step,
+    status: i === 0 ? 'active' : 'pending'
+  }))
+})
+
+// 获取进度标题
+function getProgressTitle() {
+  const status = workflowStatus.value
+  const run = status.runningWorkflow
+
+  if (status.justTriggered && !status.hasRunning) {
+    return '已触发，等待启动...'
+  }
+  if (run?.status === 'queued') {
+    return '排队中，请稍候...'
+  }
+  if (run?.status === 'in_progress') {
+    return '正在处理...'
+  }
+  return '工作流运行中...'
+}
 
 // 工作流仓库配置
 const WORKFLOW_OWNER = 'IT-NuanxinPro'
 const WORKFLOW_REPO = 'wallpaper-gallery-workflow'
+
+// 前端仓库配置
+const FRONTEND_OWNER = 'IT-NuanxinPro'
+const FRONTEND_REPO = 'wallpaper-gallery'
 
 async function refresh() {
   const { owner, repo, branch } = configStore.config
@@ -298,6 +426,36 @@ async function handleRollback() {
     }
   } finally {
     rolling.value = false
+  }
+}
+
+async function handleDeployFrontend() {
+  try {
+    await ElMessageBox.confirm(
+      '确定要重新部署前端吗？\n\n这将：\n• 触发 GitHub Pages 重新构建\n• 更新 CDN 版本号\n• 清除 Cloudflare 缓存\n\n部署过程约需 2-3 分钟',
+      '部署确认',
+      {
+        confirmButtonText: '确定部署',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    deploying.value = true
+
+    // 使用 workflow_dispatch 触发前端部署
+    await workflowStore.triggerFrontendDeploy(FRONTEND_OWNER, FRONTEND_REPO)
+
+    ElMessage.success('前端部署已触发，请稍后查看 GitHub Actions 状态')
+  } catch (error) {
+    if (error !== 'cancel') {
+      const errMsg =
+        error?.message || (typeof error === 'object' ? JSON.stringify(error) : String(error))
+      console.error('Failed to trigger frontend deploy:', error)
+      ElMessage.error('部署失败: ' + errMsg)
+    }
+  } finally {
+    deploying.value = false
   }
 }
 
@@ -500,6 +658,120 @@ onUnmounted(() => {
     }
   }
 
+  &__progress {
+    padding: $spacing-3;
+    background: rgba($primary-start, 0.08);
+    border: 1px solid rgba($primary-start, 0.2);
+    border-radius: $radius-lg;
+
+    &-header {
+      display: flex;
+      align-items: center;
+      gap: $spacing-2;
+      margin-bottom: $spacing-3;
+      font-size: $font-size-sm;
+      font-weight: 600;
+      color: $primary-start;
+
+      .el-icon {
+        font-size: 16px;
+      }
+    }
+
+    &-link {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: $spacing-1;
+      margin-top: $spacing-3;
+      padding: $spacing-2;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: $radius-md;
+      font-size: $font-size-xs;
+      color: $gray-400;
+      text-decoration: none;
+      transition: all $duration-normal;
+
+      &:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: $white;
+      }
+
+      .el-icon {
+        font-size: 12px;
+      }
+    }
+  }
+
+  &__steps {
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-2;
+  }
+
+  &__step {
+    display: flex;
+    align-items: center;
+    gap: $spacing-2;
+    padding: $spacing-1 0;
+
+    &-indicator {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      font-size: 10px;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.1);
+      color: $gray-500;
+
+      .el-icon {
+        font-size: 12px;
+      }
+    }
+
+    &-text {
+      font-size: $font-size-xs;
+      color: $gray-500;
+    }
+
+    &--active {
+      .workflow-panel__step-indicator {
+        background: $primary-start;
+        color: $white;
+      }
+
+      .workflow-panel__step-text {
+        color: $primary-start;
+        font-weight: 500;
+      }
+    }
+
+    &--done {
+      .workflow-panel__step-indicator {
+        background: rgba($success, 0.2);
+        color: $success;
+      }
+
+      .workflow-panel__step-text {
+        color: $gray-400;
+      }
+    }
+
+    &--pending {
+      .workflow-panel__step-indicator {
+        background: rgba(255, 255, 255, 0.05);
+        color: $gray-600;
+      }
+
+      .workflow-panel__step-text {
+        color: $gray-600;
+      }
+    }
+  }
+
   &__message {
     display: flex;
     align-items: flex-start;
@@ -693,6 +965,34 @@ onUnmounted(() => {
       background: rgba($danger, 0.1);
       border-color: $danger;
       color: $danger;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  &__deploy-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: $spacing-2;
+    padding: $spacing-2;
+    margin-top: $spacing-2;
+    background: transparent;
+    border: 1px solid rgba($info, 0.3);
+    border-radius: $radius-md;
+    color: $gray-400;
+    font-size: $font-size-xs;
+    cursor: pointer;
+    transition: all $duration-normal;
+
+    &:hover:not(:disabled) {
+      background: rgba($info, 0.1);
+      border-color: $info;
+      color: $info;
     }
 
     &:disabled {

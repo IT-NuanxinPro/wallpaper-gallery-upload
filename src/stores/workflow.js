@@ -142,13 +142,19 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
         // 如果之前在运行，现在完成了，刷新相关数据
         if (wasRunning && pollConfig.imageOwner) {
+          console.log('[WorkflowStore] 工作流完成，刷新数据...')
           // 延迟刷新，等待 GitHub API 同步
           addDelayTimer(async () => {
-            await Promise.all([
-              refreshPendingInfo(pollConfig.imageOwner, pollConfig.imageRepo, pollConfig.branch),
-              refreshStatsData(pollConfig.imageOwner, pollConfig.imageRepo, pollConfig.branch)
-            ])
-          }, 2000)
+            try {
+              await Promise.all([
+                refreshPendingInfo(pollConfig.imageOwner, pollConfig.imageRepo, pollConfig.branch),
+                refreshStatsData(pollConfig.imageOwner, pollConfig.imageRepo, pollConfig.branch)
+              ])
+              console.log('[WorkflowStore] 数据刷新完成')
+            } catch (e) {
+              console.error('[WorkflowStore] 数据刷新失败:', e)
+            }
+          }, 1500)
         }
       }
 
@@ -223,8 +229,22 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
+  // 触发前端部署
+  async function triggerFrontendDeploy(frontendOwner, frontendRepo) {
+    loading.value = true
+    try {
+      await githubService.dispatchWorkflowByName(frontendOwner, frontendRepo, 'deploy.yml')
+      return true
+    } catch (error) {
+      console.error('Failed to trigger frontend deploy:', error)
+      throw error
+    } finally {
+      loading.value = false
+    }
+  }
+
   // 开始轮询工作流状态
-  function startPolling(workflowOwner, workflowRepo, interval = 8000) {
+  function startPolling(workflowOwner, workflowRepo, interval = 5000) {
     stopPolling()
     polling.value = true
     pollStartTime = Date.now()
@@ -233,7 +253,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     pollConfig.owner = workflowOwner
     pollConfig.repo = workflowRepo
 
-    console.log('[WorkflowStore] 开始轮询工作流状态')
+    console.log('[WorkflowStore] 开始轮询工作流状态，间隔:', interval, 'ms')
 
     // 立即检查一次
     refreshWorkflowStatus(workflowOwner, workflowRepo)
@@ -332,6 +352,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     refreshStatsData,
     refreshWorkflowStatus,
     triggerWorkflow,
+    triggerFrontendDeploy,
     rollbackLastRelease,
     startPolling,
     stopPolling,

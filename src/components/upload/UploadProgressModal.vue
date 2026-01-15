@@ -7,6 +7,7 @@
     :close-on-press-escape="!uploading"
     :show-close="!uploading"
     class="upload-progress-modal"
+    align-center
   >
     <div class="upload-progress">
       <!-- 总体进度 -->
@@ -380,6 +381,29 @@ function handleClose() {
   }
   to {
     transform: rotate(360deg);
+  }
+}
+</style>
+
+<!-- 全局样式覆盖 el-dialog -->
+<style lang="scss">
+.upload-progress-modal {
+  // 垂直居中
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  .el-dialog {
+    margin: 0 !important;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .el-dialog__body {
+    overflow: hidden;
+    flex: 1;
+    padding: 16px 20px;
   }
 }
 </style>

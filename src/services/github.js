@@ -564,6 +564,36 @@ class GitHubService {
     })
   }
 
+  /**
+   * 通过工作流文件名触发 workflow_dispatch
+   * @param {string} owner - 仓库所有者
+   * @param {string} repo - 仓库名
+   * @param {string} workflowFileName - 工作流文件名，如 'deploy.yml'
+   * @param {string} ref - 分支名，默认 'main'
+   * @param {object} inputs - 输入参数
+   */
+  async dispatchWorkflowByName(owner, repo, workflowFileName, ref = 'main', inputs = {}) {
+    const endpoint = `/repos/${owner}/${repo}/actions/workflows/${workflowFileName}/dispatches`
+
+    try {
+      return await this.request(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          ref,
+          inputs
+        })
+      })
+    } catch (error) {
+      if (error.status === 404 || error.type === 'NOT_FOUND') {
+        throw {
+          type: 'WORKFLOW_PERMISSION_DENIED',
+          message: `无法触发工作流：您没有 ${owner}/${repo} 仓库的写入权限，或工作流文件 ${workflowFileName} 不存在。`
+        }
+      }
+      throw error
+    }
+  }
+
   // ============ 工具方法 ============
 
   /**
