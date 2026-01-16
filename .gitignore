@@ -24,6 +24,9 @@ dist-ssr
 *.sw?
 
 # Auto-generated
+.kiro
+.claude
+.shared
 src/auto-imports.d.ts
 src/components.d.ts
 .eslintrc-auto-import.json

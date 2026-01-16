@@ -75,7 +75,14 @@
 <script setup>
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { Upload, Clock, Setting, ArrowDown, SwitchButton } from '@element-plus/icons-vue'
+import {
+  Upload,
+  Clock,
+  Setting,
+  ArrowDown,
+  SwitchButton,
+  MagicStick
+} from '@element-plus/icons-vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import GradientBackground from '@/components/GradientBackground.vue'
 import GlassCard from '@/components/GlassCard.vue'
@@ -109,6 +116,7 @@ const permissionTagType = computed(() => {
 const navItems = [
   { path: '/upload', label: '上传', icon: Upload },
   { path: '/history', label: '历史', icon: Clock },
+  { path: '/ai-assistant', label: 'AI 助手', icon: MagicStick },
   { path: '/settings', label: '设置', icon: Setting }
 ]
 
@@ -261,7 +269,7 @@ async function handleCommand(command) {
     flex: 1;
     padding: 0 $spacing-4 $spacing-4;
     min-height: 0;
-    overflow: hidden;
+    overflow: visible;
     display: flex;
     flex-direction: column;
   }

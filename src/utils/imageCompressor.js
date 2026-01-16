@@ -268,7 +268,7 @@ class ImageCompressor {
         type: file.type,
         name: file.name
       }
-    } catch (error) {
+    } catch {
       return null
     }
   }

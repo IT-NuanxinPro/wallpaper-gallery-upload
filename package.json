@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:proxy": "node server/ai-proxy.js",
+    "dev:all": "concurrently \"npm run dev\" \"npm run dev:proxy\"",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint src --fix",

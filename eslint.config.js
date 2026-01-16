@@ -6,7 +6,7 @@ import autoImportGlobals from './.eslintrc-auto-import.json' with { type: 'json'
 
 export default [
   {
-    ignores: ['dist/**', 'node_modules/**']
+    ignores: ['dist/**', 'node_modules/**', 'scripts/**', 'worker/**', 'server/**']
   },
   js.configs.recommended,
   ...pluginVue.configs['flat/recommended'],
